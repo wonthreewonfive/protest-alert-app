@@ -1,0 +1,68 @@
+
+
+import streamlit as st
+from openai import OpenAI
+from dotenv import load_dotenv
+import os
+from PIL import Image
+import pytesseract
+import PyPDF2
+
+# Tesseract 실행파일 경로 직접 지정(변경 필요함.)
+pytesseract.pytesseract.tesseract_cmd = r"C:\\Program Files\\Tesseract-OCR\\tesseract.exe"
+
+st.title("종로구 집회 관련 챗봇")
+
+# .env 환경변수 로드
+load_dotenv()
+api_key = os.getenv("OPENAI_API_KEY")
+if not api_key:
+    st.error("OPENAI_API_KEY가 .env 파일에 없습니다.")
+    st.stop()
+client = OpenAI(api_key=api_key)
+
+# 파일 업로드 (jpg/pdf)
+uploaded_file = st.file_uploader("이미지(jpg) 또는 PDF 파일을 업로드하세요.", type=["jpg", "jpeg", "pdf"])
+extracted_text = ""
+if uploaded_file:
+    if uploaded_file.type in ["image/jpeg", "image/jpg"]:
+        image = Image.open(uploaded_file)
+        extracted_text = pytesseract.image_to_string(image, lang="kor+eng")
+        st.info("이미지에서 추출된 텍스트:\n" + extracted_text)
+    elif uploaded_file.type == "application/pdf":
+        reader = PyPDF2.PdfReader(uploaded_file)
+        extracted_text = ""
+        for page in reader.pages:
+            extracted_text += page.extract_text()
+        st.info("PDF에서 추출된 텍스트:\n" + extracted_text)
+
+if "openai_model" not in st.session_state:
+    st.session_state["openai_model"] = "gpt-3.5-turbo"
+
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+# 이전 대화 출력
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+
+# 질문 입력 및 첨부파일 내용 포함
+if prompt := st.chat_input("질문을 입력하세요! (파일을 첨부하면 내용도 함께 질문됩니다)"):
+    full_prompt = prompt
+    if extracted_text:
+        full_prompt += f"\n\n[첨부파일 내용]\n{extracted_text}"
+    st.session_state.messages.append({"role": "user", "content": full_prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+    with st.chat_message("assistant"):
+        stream = client.chat.completions.create(
+            model=st.session_state["openai_model"],
+            messages=[
+                {"role": m["role"], "content": m["content"]}
+                for m in st.session_state.messages
+            ],
+            stream=True,
+        )
+        response = st.write_stream(stream)
+    st.session_state.messages.append({"role": "assistant", "content": response})
