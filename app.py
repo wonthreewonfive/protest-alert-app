@@ -1,5 +1,7 @@
+# app.py
 import streamlit as st
 import pandas as pd
+import pydeck as pdk
 from dateutil import parser
 from datetime import date, datetime
 from streamlit_calendar import calendar
@@ -22,13 +24,14 @@ st.markdown("""
     text-align:center; margin:6px 0 16px 0;
   }
 
+  /* 카드 공통 */
   .card { border:1px solid #e5e7eb; border-radius:14px; padding:16px; margin:12px 6px; background:#fff; }
   .time { font-weight:800; font-size:18px; margin-bottom:6px; color:#111827; }
   .sub  { color:#6b7280; font-size:14px; margin-bottom:8px; }
   .meta { color:#374151; font-size:14px; }
 
-  /* 클릭 가능한 카드 링크 */
-  a.card-link { text-decoration:none; color:inherit; display:block; }
+  /* 카드형 링크 */
+  a.card-link { display:block; text-decoration:none; color:inherit; }
   a.card-link .card:hover { border-color:#94a3b8; background:#f8fafc; }
 
   /* 달력: 텍스트 숨기고 도트만 보이게 */
@@ -71,7 +74,7 @@ def load_events(path: str) -> pd.DataFrame:
     def to_date(x):
         if pd.isna(x): return None
         s = str(x).strip()
-        if re.match(r"^\\d{4}\\.\\d{1,2}\\.\\d{1,2}$", s):
+        if re.match(r'^\d{4}\.\d{1,2}\.\d{1,2}$', s):
             s = s.replace(".", "-")
         try: return parser.parse(s).date()
         except: return None
@@ -93,6 +96,74 @@ def load_events(path: str) -> pd.DataFrame:
 
     df = df[df["_date"].notnull() & df["_start"].notnull() & df["_end"].notnull()]
     return df.reset_index(drop=True)
+
+@st.cache_data
+def load_bus(path: str) -> pd.DataFrame:
+    """
+    bus_data.xlsx
+    필요한 컬럼: start_date, start_time, end_date, end_time, ARS_ID, 정류소명, x좌표(lon), y좌표(lat)
+    """
+    p = Path(path)
+    if not p.exists():
+        return pd.DataFrame()
+    df = pd.read_excel(p)
+
+    def to_date(x):
+        if pd.isna(x): return None
+        s = str(x).strip()
+        if re.match(r'^\d{4}\.\d{1,2}\.\d{1,2}$', s):
+            s = s.replace(".", "-")
+        try: return parser.parse(s).date()
+        except: return None
+
+    def to_time(x):
+        if pd.isna(x): return None
+        try:
+            t = parser.parse(str(x)).time()
+            return f"{t.hour:02d}:{t.minute:02d}"
+        except: return None
+
+    # 유연 컬럼명 매핑
+    cols = {c: str(c).strip().lower() for c in df.columns}
+    def pick(*names):
+        for n in names:
+            for c, lc in cols.items():
+                if lc == n:
+                    return c
+        return None
+
+    c_sd = pick("start_date","시작일")
+    c_st = pick("start_time","시작시간")
+    c_ed = pick("end_date","종료일")
+    c_et = pick("end_time","종료시간")
+    c_ars= pick("ars_id","ars","정류장id")
+    c_nm = pick("정류소명","정류장명","stop_name")
+    c_x  = pick("x좌표","x","lon","lng")
+    c_y  = pick("y좌표","y","lat")
+
+    req = [c_sd,c_st,c_ed,c_et,c_ars,c_nm,c_x,c_y]
+    if any(c is None for c in req):
+        return pd.DataFrame()
+
+    ars_series = (
+        df[c_ars]
+        .astype(str)
+        .map(lambda s: re.sub(r"\D", "", s))  # '1126.0' 같은 경우도 정리
+        .map(lambda s: s.zfill(5))            # 5자리로 패딩 → 01126
+    )
+
+    out = pd.DataFrame({
+        "start_date": df[c_sd].apply(to_date),
+        "start_time": df[c_st].apply(to_time),
+        "end_date":   df[c_ed].apply(to_date),
+        "end_time":   df[c_et].apply(to_time),
+        "ARS_ID":     ars_series,
+        "정류소명":      df[c_nm].astype(str),
+        "lon":        pd.to_numeric(df[c_x], errors="coerce"),
+        "lat":        pd.to_numeric(df[c_y], errors="coerce"),
+    })
+    out = out.dropna(subset=["start_date","end_date","lon","lat"]).reset_index(drop=True)
+    return out
 
 def color_by_headcount(h):
     try:
@@ -120,27 +191,31 @@ def df_to_month_dots(df: pd.DataFrame):
 def filter_by_day(df: pd.DataFrame, d: date) -> pd.DataFrame:
     return df[df["_date"] == d].sort_values(by=["_start","_end","_loc"])
 
-# ---------- 상세 페이지 렌더러 ----------
-def render_detail(df_all: pd.DataFrame, d: date, idx: int):
+def get_bus_rows_for_date(bus_df: pd.DataFrame, d: date) -> pd.DataFrame:
+    if bus_df is None or bus_df.empty:
+        return pd.DataFrame()
+    m = (bus_df["start_date"] <= d) & (bus_df["end_date"] >= d)
+    return bus_df[m].copy()
+
+# ---------- 상세 페이지 ----------
+def render_detail(df_all: pd.DataFrame, bus_df: pd.DataFrame, d: date, idx: int):
     day_df = filter_by_day(df_all, d)
     if len(day_df) == 0 or idx < 0 or idx >= len(day_df):
         st.error("상세 정보를 찾을 수 없어요.")
         if st.button("← 목록으로"):
-            st.query_params.clear()  # 쿼리 제거
+            st.query_params.clear()
             st.rerun()
         return
 
     row = day_df.iloc[idx]
 
-    # 헤더
-    #st.markdown("<div class='app-header'>집회/시위 알림 서비스</div>", unsafe_allow_html=True)
     WEEK_KO = ["월","화","수","목","금","토","일"]
     st.markdown(f"## {d.month}월 {d.day}일({WEEK_KO[d.weekday()]}) 상세 정보")
     if st.button("← 목록으로"):
         st.query_params.clear()
         st.rerun()
 
-    # (1) 오늘의 집회/시위 정리 (표)
+    # (1) 오늘의 집회/시위
     st.subheader("오늘의 집회/시위")
     time_str = f"{row['_start']} ~ {row['_end']}"
     loc_str  = f"{(row['_dist']+' ') if row['_dist'] not in ['','nan','None'] else ''}{row['_loc']}"
@@ -149,17 +224,68 @@ def render_detail(df_all: pd.DataFrame, d: date, idx: int):
         except: head_str = f"{row['_head']}명"
     else:
         head_str = ""
-    bus_str = ""  # TODO: 우회 정보 연동시 채우기
-    info_df = pd.DataFrame([[time_str, loc_str, head_str, bus_str]],
-                           columns=["집회 시간","집회 장소(행진로)","신고 인원","버스 우회 정보"])
+    keywords = str(row["_memo"]).strip() if str(row["_memo"]).strip() not in ["nan","None"] else ""
+    info_df = pd.DataFrame([[time_str, loc_str, head_str, keywords]],
+                           columns=["집회 시간","집회 장소(행진로)","신고 인원","키워드"])
     st.table(info_df)
 
-    # (2) 기사 영역 (플레이스홀더)
+    # (1-1) 버스 우회 정보 + 지도
+    bus_rows = get_bus_rows_for_date(bus_df, d)
+    st.markdown("### 버스 우회 정보")
+    if bus_rows.empty:
+        st.caption("※ 해당 날짜의 버스 우회 정보가 없습니다.")
+    else:
+        bus_view = bus_rows[["start_time","end_time","ARS_ID","정류소명"]].rename(
+            columns={"start_time":"시작 시간","end_time":"종료 시간","ARS_ID":"버스 정류소 번호","정류소명":"버스 정류소 명"}
+        )
+        st.table(bus_view.reset_index(drop=True))
+
+        # 지도: 마커 + 정류소 번호 텍스트
+        map_df = bus_rows[["lat","lon","정류소명","ARS_ID"]].copy()
+        if not map_df.empty:
+            view_state = pdk.ViewState(
+                latitude=float(map_df["lat"].mean()),
+                longitude=float(map_df["lon"].mean()),
+                zoom=16
+            )
+
+            point_layer = pdk.Layer(
+                "ScatterplotLayer",
+                data=map_df,
+                get_position='[lon, lat]',
+                get_radius=25,
+                get_fill_color=[0, 122, 255, 200],
+                pickable=True,
+            )
+
+            text_layer = pdk.Layer(
+                "TextLayer",
+                data=map_df,
+                get_position='[lon, lat]',
+                get_text="ARS_ID",
+                get_color=[0, 0, 0, 255],
+                get_size=16,
+                get_angle=0,
+                get_alignment_baseline='"top"',
+                get_pixel_offset=[0, -18],
+                billboard=True,
+            )
+
+            tooltip = {
+                "html": "<b>{정류소명}</b><br/>정류소 번호: {ARS_ID}",
+                "style": {"backgroundColor": "white", "color": "black"}
+            }
+
+            st.pydeck_chart(pdk.Deck(
+                layers=[point_layer, text_layer],
+                initial_view_state=view_state,
+                tooltip=tooltip
+            ))
+
+    # (2) 기사 영역 (placeholder)
     st.subheader("집회/시위 관련 기사 보기")
     st.caption("※ 크롤링 연동 예정. 데이터 준비되면 이 영역에 노출됩니다.")
-    c1, c2 = st.columns(2)
-    with c1: st.empty()
-    with c2: st.empty()
+    st.empty()
 
     # (3) 건의사항
     st.subheader("오늘의 집회/시위에 대한 여러분의 건의사항을 남겨주세요")
@@ -189,7 +315,6 @@ def render_detail(df_all: pd.DataFrame, d: date, idx: int):
             new.to_csv(save_path, index=False, encoding="utf-8-sig")
             st.success("건의사항이 저장되었습니다. 감사합니다!")
             st.query_params.clear()
-            # st.rerun()  # 필요하면 목록으로 자동 이동
 
 # ===================== 메인/라우팅 =====================
 st.markdown("<div class='app-header'>집회/시위 알림 서비스</div>", unsafe_allow_html=True)
@@ -197,20 +322,27 @@ st.markdown("<div class='app-header'>집회/시위 알림 서비스</div>", unsa
 # 좌/우 높이 동기화
 CALENDAR_H = 520
 HEADER_OFFSET = 85
-PANEL_BODY_H = CALENDAR_H - HEADER_OFFSET
+PANEL_BODY_H = CALENDAR_H - HEADER_OFFSET   # 오른쪽 스크롤 영역 높이
 
 # 데이터 경로
 DATA_PATH = st.sidebar.text_input(
-    "데이터 파일 경로 (xlsx/csv)",
+    "집회 데이터 경로 (xlsx/csv)",
     value="/Users/byun-yewon/protest_alert_service/data/protest_data.xlsx"
 )
+BUS_PATH = st.sidebar.text_input(
+    "버스 우회 데이터 경로 (xlsx)",
+    value="/Users/byun-yewon/protest_alert_service/data/bus_data.xlsx"
+)
+
 try:
     df = load_events(DATA_PATH)
 except Exception as e:
     st.error(f"데이터 로드 오류: {e}")
     st.stop()
 
-# ---- 라우팅: 쿼리파라미터 확인 (detail 모드면 상세 화면만 렌더) ----
+bus_df = load_bus(BUS_PATH)
+
+# ---- 라우팅: 쿼리 파라미터(detail 모드) ----
 qp = st.query_params
 view = qp.get("view", "")
 if view == "detail":
@@ -219,12 +351,11 @@ if view == "detail":
     try:
         d_sel = parser.parse(d_str).date()
         idx_sel = int(idx_str)
-        render_detail(df, d_sel, idx_sel)
+        render_detail(df, bus_df, d_sel, idx_sel)
         st.stop()
     except Exception:
         st.warning("잘못된 링크입니다. 목록으로 돌아갑니다.")
         st.query_params.clear()
-        # 계속 진행해서 목록 보여주기
 
 # ---------- 메인 화면 ----------
 st.markdown("### 이달의 집회")
@@ -246,7 +377,7 @@ with left:
         }
         calendar(events=events, options=options)
 
-# 오른쪽: 날짜 네비 + 카드 목록(카드=링크)
+# 오른쪽: 날짜 네비 + 카드 목록(HTML 링크, 고정 높이 컨테이너)
 if "sel_date" not in st.session_state:
     st.session_state.sel_date = date.today()
 
@@ -275,39 +406,41 @@ with right:
 
         day_df = filter_by_day(df, sel_date)
 
-        # 카드 목록(고정 높이, 스크롤). 각 카드는 detail 뷰로 링크.
-        html = [f'<div style="height:{PANEL_BODY_H}px; overflow-y:auto; padding-right:8px;">']
+        # 공백 없이 스크롤 컨테이너에 카드 HTML을 일괄 삽입
+        html = [f"<div style='height:{PANEL_BODY_H}px; overflow-y:auto; padding-right:8px;'>"]
+
         if len(day_df) == 0:
-            html.append('<div style="color:#374151;">등록된 집회가 없습니다.</div>')
+            html.append('<div class="sub">등록된 집회가 없습니다.</div>')
         else:
             for i, (_, r) in enumerate(day_df.iterrows()):
+                # 장소(관할서 있으면 접두)
                 loc_line = r["_loc"]
-                if r["_dist"] and str(r["_dist"]).strip() not in ["nan","None",""]:
+                if r["_dist"] and str(r["_dist"]).strip() not in ["nan", "None", ""]:
                     loc_line = f"{r['_dist']}  {loc_line}"
 
+                # 메타(신고 인원, 메모)
                 metas = []
                 if pd.notna(r["_head"]) and str(r["_head"]).strip() != "":
                     try:
                         metas.append(f"신고 인원 {int(r['_head'])}명")
                     except:
                         metas.append(f"신고 인원 {r['_head']}명")
-                if r["_memo"] and str(r["_memo"]).strip() not in ["nan","None",""]:
+                if r["_memo"] and str(r["_memo"]).strip() not in ["nan", "None", ""]:
                     metas.append(str(r["_memo"]))
                 meta_text = " · ".join(metas)
                 meta_html = f"<div class='meta'>{meta_text}</div>" if meta_text else ""
 
-                # 최신 API: 쿼리파라미터 업데이트
-                # a 태그는 단순 이동만 담당. 페이지에서 st.query_params로 읽음
                 href = f"?view=detail&date={sel_date.isoformat()}&idx={i}"
-                card = (
-                    f'<a class="card-link" href="{href}">'
-                    f'  <div class="card">'
-                    f'    <div class="time">{r["_start"]} ~ {r["_end"]}</div>'
-                    f'    <div class="sub">{loc_line}</div>'
-                    f'    {meta_html}'
-                    f'  </div>'
-                    f'</a>'
-                )
-                html.append(card)
+
+                html.append(textwrap.dedent(f"""
+                    <a class="card-link" href="{href}">
+                      <div class="card">
+                        <div class="time">{r["_start"]} ~ {r["_end"]}</div>
+                        <div class="sub">{loc_line}</div>
+                        {meta_html}
+                      </div>
+                    </a>
+                """).strip())
+
         html.append("</div>")
-        st.markdown(textwrap.dedent("\n".join(html)), unsafe_allow_html=True)
+        st.markdown("\n".join(html), unsafe_allow_html=True)
