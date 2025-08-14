@@ -2,12 +2,21 @@
 import streamlit as st
 import pandas as pd
 import pydeck as pdk
+import altair as alt
 from dateutil import parser
 from datetime import date, datetime
 from streamlit_calendar import calendar
 from pathlib import Path
 import re
 import textwrap
+from collections import Counter
+
+# --- optional: wordcloud ---
+try:
+    from wordcloud import WordCloud
+    WORDCLOUD_AVAILABLE = True
+except Exception:
+    WORDCLOUD_AVAILABLE = False
 
 st.set_page_config(page_title="집회/시위 알림 서비스", page_icon="📅", layout="wide")
 
@@ -145,11 +154,12 @@ def load_bus(path: str) -> pd.DataFrame:
     if any(c is None for c in req):
         return pd.DataFrame()
 
+    # ARS_ID → 숫자/점 제거 후 5자리 0-padding
     ars_series = (
         df[c_ars]
         .astype(str)
-        .map(lambda s: re.sub(r"\D", "", s))  # '1126.0' 같은 경우도 정리
-        .map(lambda s: s.zfill(5))            # 5자리로 패딩 → 01126
+        .map(lambda s: re.sub(r"\D", "", s))
+        .map(lambda s: s.zfill(5))
     )
 
     out = pd.DataFrame({
@@ -196,6 +206,103 @@ def get_bus_rows_for_date(bus_df: pd.DataFrame, d: date) -> pd.DataFrame:
         return pd.DataFrame()
     m = (bus_df["start_date"] <= d) & (bus_df["end_date"] >= d)
     return bus_df[m].copy()
+
+# -------------- 텍스트 전처리/키워드 --------------
+# 불용어(조사/접속사/상투어) & 자주 나오는 어미 제거
+_STOPWORDS = {
+    "그리고","그러나","하지만","또는","및","때문","때문에","대한","관련","대해",
+    "여러분","정도","부분","등","좀","너무","수","것","거","이것","저것","우리",
+    "입니다","합니다","하는","있는","되는","됩니다","드립니다","해주시면","해주십시오",
+    "해주세요","부탁드립니다","같습니다","감사합니다","감사하겠습니다","불편합니다",
+    "입니다만","않습니다","않아요","않구요","됩니다만",
+    # 조사
+    "으로","로","에서","에게","에는","에는요","에는요","에","의","을","를","이","가","와","과","도","만","보다",
+}
+
+# 자주 나오는 존댓말 어미/형식 제거용 간단 스테밍
+_SUFFIX_PAT = re.compile(
+    r"(입니다|합니다|하십시오|해주세요|해주세요|해주시기|해주시길|해주시면|해주십시오|"
+    r"되겠습니다|되겠습|되었습|되었으면|되면|되어|되었습니다|되는데|않습니다|않아요|"
+    r"같습니다|하겠습니다|부탁드립니다|감사합니다|감사하겠습니다|해요|했어요|합니다만)$"
+)
+
+def strip_suffix(tok: str) -> str:
+    tok = re.sub(_SUFFIX_PAT, "", tok)
+    return tok
+
+def tokenize_ko(s: str):
+    if not isinstance(s, str): return []
+    # 한/영/숫자 단어만 추출
+    cand = re.findall(r"[가-힣A-Za-z0-9]+", s)
+    out = []
+    for t in cand:
+        t = strip_suffix(t)
+        if len(t) < 2:   # 한 글자 토큰 제거
+            continue
+        if t in _STOPWORDS:
+            continue
+        out.append(t)
+    return out
+
+def make_bigrams(tokens, join_str=" "):
+    return [join_str.join(pair) for pair in zip(tokens, tokens[1:])]
+
+def build_wordcloud_image(fb_df: pd.DataFrame, date_filter=None, use_bigrams=False,
+                          font_path="data/Nanum_Gothic/NanumGothic-Regular.ttf"):
+    if not WORDCLOUD_AVAILABLE: return None
+    if fb_df is None or fb_df.empty or "feedback" not in fb_df.columns: return None
+    df = fb_df.copy()
+    if date_filter is not None and "date" in df.columns:
+        df = df[df["date"].astype(str) == str(date_filter)]
+    texts = df["feedback"].dropna().astype(str).tolist()
+    if not texts: return None
+
+    counter = Counter()
+    for t in texts:
+        toks = tokenize_ko(t)
+        if use_bigrams:
+            toks = make_bigrams(toks)
+        counter.update(toks)
+    if not counter: return None
+
+    fp = font_path if Path(font_path).exists() else None
+    wc = WordCloud(font_path=fp, width=1200, height=600, background_color="white", colormap="tab20c")
+    return wc.generate_from_frequencies(counter).to_image()
+
+def top_terms_from_feedback(fb_df, date_filter=None, use_bigrams=False, top_k=20):
+    if fb_df is None or fb_df.empty or "feedback" not in fb_df.columns:
+        return pd.DataFrame(columns=["term","count","pct"])
+
+    df = fb_df.copy()
+    if date_filter is not None and "date" in df.columns:
+        df = df[df["date"].astype(str) == str(date_filter)]
+    texts = df["feedback"].dropna().astype(str).tolist()
+    if not texts:
+        return pd.DataFrame(columns=["term","count","pct"])
+
+    counter = Counter()
+    for t in texts:
+        toks = tokenize_ko(t)
+        if use_bigrams:
+            toks = make_bigrams(toks)
+        counter.update(toks)
+
+    if not counter:
+        return pd.DataFrame(columns=["term","count","pct"])
+
+    items = counter.most_common(top_k)
+    out = pd.DataFrame(items, columns=["term","count"])
+    out["pct"] = (out["count"] / counter.total() * 100).round(1)
+    return out
+
+def load_feedback(path="data/feedback.csv"):
+    p = Path(path)
+    if not p.exists():
+        return pd.DataFrame()
+    try:
+        return pd.read_csv(p)
+    except Exception:
+        return pd.DataFrame()
 
 # ---------- 상세 페이지 ----------
 def render_detail(df_all: pd.DataFrame, bus_df: pd.DataFrame, d: date, idx: int):
@@ -287,7 +394,67 @@ def render_detail(df_all: pd.DataFrame, bus_df: pd.DataFrame, d: date, idx: int)
     st.caption("※ 크롤링 연동 예정. 데이터 준비되면 이 영역에 노출됩니다.")
     st.empty()
 
-    # (3) 건의사항
+    # (2.5) 건의사항 키워드 요약 (워드클라우드 + Top N + 예시)
+    st.subheader("건의사항 키워드 요약")
+    fb_all = load_feedback("data/feedback.csv")
+    if fb_all.empty:
+        st.caption("아직 저장된 건의사항이 없습니다.")
+    else:
+        colA, colB = st.columns([1,1])
+        with colA:
+            only_today = st.toggle("이 날짜만 보기", value=True, key="wc_today")
+            use_bigrams = st.toggle("연결어(2단어)로 보기", value=False, key="wc_bigram")
+            img = build_wordcloud_image(
+                fb_all,
+                date_filter=d if only_today else None,
+                use_bigrams=use_bigrams,
+                font_path="data/Nanum_Gothic/NanumGothic-Regular.ttf"
+            )
+            if img is not None:
+                st.image(img, use_container_width=True)
+            else:
+                st.caption("워드클라우드를 만들 수 있는 텍스트가 부족합니다.")
+
+        with colB:
+            top_df = top_terms_from_feedback(
+                fb_all,
+                date_filter=d if only_today else None,
+                use_bigrams=use_bigrams,
+                top_k=20
+            )
+            if top_df.empty:
+                st.caption("표시할 키워드가 없습니다.")
+            else:
+                st.markdown("**상위 키워드/표현 TOP 20**")
+                chart = (
+                    alt.Chart(top_df)
+                    .mark_bar()
+                    .encode(
+                        x=alt.X("count:Q", title="건수"),
+                        y=alt.Y("term:N", sort="-x", title=None),
+                        tooltip=[alt.Tooltip("term:N", title="용어"),
+                                 alt.Tooltip("count:Q", title="건수"),
+                                 alt.Tooltip("pct:Q", title="비율(%)")]
+                    )
+                    .properties(height=420)
+                )
+                st.altair_chart(chart, use_container_width=True)
+
+                sel = st.selectbox("예시 문장 보기: 키워드 선택", ["선택 안 함"] + top_df["term"].tolist())
+                if sel != "선택 안 함":
+                    _df = fb_all.copy()
+                    if only_today and "date" in _df.columns:
+                        _df = _df[_df["date"].astype(str) == str(d)]
+                    ex = _df[_df["feedback"].str.contains(re.escape(sel), case=False, na=False)] \
+                        .tail(5)["feedback"]
+                    if ex.empty:
+                        st.caption("해당 키워드의 예시가 없습니다.")
+                    else:
+                        st.markdown("**최근 예시 5건**")
+                        for i, line in enumerate(ex, 1):
+                            st.write(f"{i}. {line}")
+
+    # (3) 건의사항 입력
     st.subheader("오늘의 집회/시위에 대한 여러분의 건의사항을 남겨주세요")
     fb = st.text_area("의견을 작성해주세요 (관리자에게 전달됩니다)", height=140, key="fb_detail")
     if st.button("등록"):
@@ -327,11 +494,11 @@ PANEL_BODY_H = CALENDAR_H - HEADER_OFFSET   # 오른쪽 스크롤 영역 높이
 # 데이터 경로
 DATA_PATH = st.sidebar.text_input(
     "집회 데이터 경로 (xlsx/csv)",
-    value="/Users/byun-yewon/protest_alert_service/data/protest_data.xlsx"
+    value="data/protest_data.xlsx"
 )
 BUS_PATH = st.sidebar.text_input(
     "버스 우회 데이터 경로 (xlsx)",
-    value="/Users/byun-yewon/protest_alert_service/data/bus_data.xlsx"
+    value="data/bus_data.xlsx"
 )
 
 try:
