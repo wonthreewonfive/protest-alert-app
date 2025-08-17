@@ -388,24 +388,12 @@ def render_detail(df_all: pd.DataFrame, bus_df: pd.DataFrame, routes_df: pd.Data
                 get_fill_color=[0, 122, 255, 200],
                 pickable=True,
             )
-            text_layer = pdk.Layer(
-                "TextLayer",
-                data=map_df,
-                get_position='[lon, lat]',
-                get_text="ARS_ID",
-                get_color=[0, 0, 0, 255],
-                get_size=16,
-                get_angle=0,
-                get_alignment_baseline='"top"',
-                get_pixel_offset=[0, -18],
-                billboard=True,
-            )
             tooltip = {
                 "html": "<b>{정류소명}</b><br/>정류소 번호: {ARS_ID}<br/>노선: {노선}",
                 "style": {"backgroundColor": "white", "color": "black"}
             }
             st.pydeck_chart(pdk.Deck(
-                layers=[point_layer, text_layer],
+                layers=[point_layer],
                 initial_view_state=view_state,
                 tooltip=tooltip
             ))
