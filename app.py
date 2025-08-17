@@ -340,7 +340,7 @@ def render_detail(df_all: pd.DataFrame, bus_df: pd.DataFrame, routes_df: pd.Data
         head_str = ""
     keywords = str(row["_memo"]).strip() if str(row["_memo"]).strip() not in ["nan","None"] else ""
     info_df = pd.DataFrame([[time_str, loc_str, head_str, keywords]],
-                           columns=["집회 시간","집회 장소(행진로)","신고 인원","키워드"])
+                           columns=["집회 시간","집회 장소(행진로)","신고 인원","관련 이슈"])
     st.table(info_df)
 
     # (1-1) 버스 우회 정보 + 지도 (+노선)
