@@ -13,24 +13,25 @@ from dateutil import parser
 from streamlit_calendar import calendar
 import base64
 
-# ====== Chatbot deps ======
+# ====================== Chatbot dependencies ======================
 from langchain_openai import ChatOpenAI
 from langchain.prompts import PromptTemplate
 from dotenv import load_dotenv
 
-# .env 로드 및 KEY 확인
+# ====================== 환경 변수 로드 ======================
 load_dotenv()
 API_KEY = os.getenv("OPENAI_API_KEY")
 if not API_KEY:
     raise ValueError("❌ OPENAI_API_KEY 환경변수가 설정되지 않았습니다. .env 파일을 확인하세요.")
 
-# --- optional: wordcloud ---
+# ====================== Wordcloud (선택적) ======================
 try:
     from wordcloud import WordCloud
     WORDCLOUD_AVAILABLE = True
 except Exception:
     WORDCLOUD_AVAILABLE = False
 
+# ====================== 기본 페이지 설정 ======================
 st.set_page_config(page_title="집회/시위 알림 서비스", page_icon="📅", layout="wide")
 
 # ====================== 스타일 ======================
@@ -40,6 +41,7 @@ def get_base64_of_image(path):
     return base64.b64encode(data).decode()
 
 logo_base64 = get_base64_of_image("data/assets/logo.png")
+
 # ====================== 헤더 이미지 ======================
 st.markdown(
     f"""
@@ -309,7 +311,7 @@ def get_bus_rows_for_date(bus_df: pd.DataFrame, d: date)->pd.DataFrame:
     if bus_df is None or bus_df.empty: return pd.DataFrame()
     return bus_df[(bus_df["start_date"]<=d)&(bus_df["end_date"]>=d)].copy()
 
-# ---------------- 텍스트 전처리 ----------------
+# ====================== 텍스트 전처리 ======================
 _STOPWORDS = {
     "그리고","그러나","하지만","또는","및","때문","때문에","대한","관련","대해",
     "여러분","정도","부분","등","좀","너무","수","것","거","이것","저것","우리",
@@ -363,7 +365,7 @@ def load_feedback(path="data/feedback.csv"):
     try: return pd.read_csv(p)
     except Exception: return pd.DataFrame()
 
-# ---------- 지식(텍스트) 로드 ----------
+# ====================== 텍스트 지식 로드 ======================
 @st.cache_data
 def load_all_txt(data_dir="data/chatbot"):
     texts=[]; p=Path(data_dir)
@@ -435,7 +437,6 @@ def render_detail(df_all: pd.DataFrame, bus_df: pd.DataFrame, routes_df: pd.Data
     st.caption("※ 크롤링 연동 예정. 데이터 준비되면 이 영역에 노출됩니다.")
     st.empty()
 
-    # --- 피드백 작성/저장 ---
     st.markdown("###### 오늘의 집회/시위에 대한 여러분의 건의사항을 남겨주세요")
 
     with st.form("feedback_form", clear_on_submit=True):
@@ -467,7 +468,6 @@ def render_detail(df_all: pd.DataFrame, bus_df: pd.DataFrame, routes_df: pd.Data
                 .to_csv(save_path, index=False, encoding="utf-8-sig")
                 st.success("건의사항이 저장되었습니다. 감사합니다!")
 
-    # --- 건의사항 키워드 요약 ---
     st.markdown("###### 건의사항 키워드 요약")
     fb_all = load_feedback("data/feedback.csv")
     if fb_all.empty:
@@ -604,7 +604,7 @@ def render_main_page(df, bus_df, routes_df):
             html.append("</div>")
             st.markdown("\n".join(html), unsafe_allow_html=True)
 
-# ====================== 챗봇 (프레임 없음/정렬 반영) ======================
+# ====================== 챗봇 ======================
 if "chat_history" not in st.session_state:
     st.session_state.chat_history=[]
 if "input_counter" not in st.session_state:
