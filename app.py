@@ -1,20 +1,29 @@
-import streamlit as st
-import streamlit.components.v1 as components
-import pandas as pd
-import pydeck as pdk
-import altair as alt
-from dateutil import parser
-from datetime import date, datetime
-from streamlit_calendar import calendar
-from pathlib import Path
+# app.py
+import os
 import re
 import textwrap
+from pathlib import Path
+from datetime import date, datetime
 from collections import Counter
-from langchain_community.chat_models import ChatOpenAI
-from langchain_openai import OpenAIEmbeddings
-from langchain_community.document_loaders import TextLoader
-from langchain.prompts import PromptTemplate 
-from langchain.chains.qa_with_sources import load_qa_with_sources_chain
+
+import pandas as pd
+import streamlit as st
+import pydeck as pdk
+from dateutil import parser
+from streamlit_calendar import calendar
+import base64
+
+# ====== Chatbot deps ======
+from langchain_openai import ChatOpenAI
+from langchain.prompts import PromptTemplate
+from dotenv import load_dotenv
+
+# .env 로드 및 KEY 확인
+load_dotenv()
+API_KEY = os.getenv("OPENAI_API_KEY")
+if not API_KEY:
+    raise ValueError("❌ OPENAI_API_KEY 환경변수가 설정되지 않았습니다. .env 파일을 확인하세요.")
+
 # --- optional: wordcloud ---
 try:
     from wordcloud import WordCloud
@@ -24,12 +33,28 @@ except Exception:
 
 st.set_page_config(page_title="집회/시위 알림 서비스", page_icon="📅", layout="wide")
 
-# ===== 스타일 =====
+# ====================== 스타일 ======================
+def get_base64_of_image(path):
+    with open(path, "rb") as f:
+        data = f.read()
+    return base64.b64encode(data).decode()
+
+logo_base64 = get_base64_of_image("data/assets/logo.png")
+# ====================== 헤더 이미지 ======================
+st.markdown(
+    f"""
+    <div style='display:flex; justify-content:left; align-items:left; padding:10px;'>
+        <img src="data:image/png;base64,{logo_base64}" alt="Logo" style="height:60px;">
+    </div>
+    """,
+    unsafe_allow_html=True
+)
+
 st.markdown("""
 <style>
-  .stApp, .main, [data-testid="stHeader"] { background: #ffffff !important; }
+  .stApp, .main, [data-testid="stHeader"] { background:#ffffff !important; }
 
-  /* 상단 사이트 타이틀 헤더 */
+  /* 상단 타이틀 */
   .app-header{
     border:1px solid #e5e7eb; border-radius:12px;
     background:#f3f4f6; padding:14px 24px;
@@ -42,27 +67,117 @@ st.markdown("""
   .time { font-weight:800; font-size:18px; margin-bottom:6px; color:#111827; }
   .sub  { color:#6b7280; font-size:14px; margin-bottom:8px; }
   .meta { color:#374151; font-size:14px; }
-
-  /* 카드형 링크 */
   a.card-link { display:block; text-decoration:none; color:inherit; }
   a.card-link .card:hover { border-color:#94a3b8; background:#f8fafc; }
 
-  /* 달력: 텍스트 숨기고 도트만 보이게 */
+  /* 달력 도트 전용 */
   .fc .fc-daygrid-dot-event .fc-event-time,
   .fc .fc-daygrid-dot-event .fc-event-title,
   .fc .fc-daygrid-event-harness .fc-event-time,
   .fc .fc-daygrid-event-harness .fc-event-title { display:none !important; }
   .fc-daygrid-dot-event > .fc-event-dot { width:10px; height:10px; border:0; }
+            
+/* FullCalendar 이전/다음 버튼 커스텀 */
+/* 이전 버튼 (◀) */
+.fc .fc-prev-button .fc-icon {
+  display: none !important;
+}
+.fc .fc-prev-button:before {
+  content: "◀" !important;
+  font-size: 22px;   /* 크기 조정 */
+  color: #000;       /* 화살표 색 */
+}
+
+/* 다음 버튼 (▶) */
+.fc .fc-next-button .fc-icon {
+  display: none !important;
+}
+.fc .fc-next-button:before {
+  content: "▶" !important;
+  font-size: 22px;
+  color: #000;
+}      
+.fc-daygrid-more-link {
+  font-size: 12px;
+  color: #000;
+}
+
+.fc-daygrid-more-link::after {
+  content: "" !important;  /* 뒤에 붙는 " more" 제거 */
+}
+
+  /* ===== Chat (테두리 프레임 없음) ===== */
+  .chat-wrap { margin-top:4px; }
+  .chat-scroll{
+    height:100px;
+    overflow-y:auto;
+    padding:15px 20px 0 20px;
+    background:#ffffff;
+  }
+  .msg-row{ display:flex; margin:10px 0; }
+  .msg-row.user{ justify-content:flex-end; }
+  .bubble{
+    max-width:560px;
+    padding:15px 20px;
+    border-radius:16px;
+    font-size:18px; line-height:1.5;
+    word-break:break-word; white-space:pre-wrap;
+  }
+  .bubble.user{ background:#2A52BF; color:#fff; }
+  .bubble.bot { background:#eeeeee; color:#000; }
+
+  /* ===== 입력줄 ===== */
+.chat-input-area { padding:12px 20px 8px 20px; }
+
+/* 바깥 wrapper 완전 제거 */
+div.stTextInput,
+div.stTextInput > div {
+    border:none;
+    background: #fff;
+},
+div.stTextInput > div > div {
+    background: transparent !important;
+    border: 1px solid #000
+    box-shadow: none !important;
+    padding: 0 !important;
+}
+
+/* 입력창 흰색 + 둥근 테두리 */
+div[data-baseweb="input"] > div {
+    background: #fff !important;
+    border: 1px solid #000 !important;
+    border-radius: 100px !important;
+    padding: 10px 15px !important;
+    color: #000;
+    font-size: 16px;
+}
+
+  /* 버튼 스타일 */
+  div.stButton > button {
+    background-color: var(--blue);
+    color: #000;
+    border-radius: 100px;
+    border: 1px solid #000;
+    font-weight: 600;
+    font-size: 16px;
+  }
+  div.stButton > button:hover {
+    background-color: #1d3e91;
+    border: 1px solid #1d3e91;
+    color: #fff;
+  }
 </style>
+
 """, unsafe_allow_html=True)
 
-# ---------- 데이터 로드 ----------
+
+
+# ====================== 데이터 로드 ======================
 @st.cache_data
 def load_events(path: str) -> pd.DataFrame:
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(f"파일을 찾을 수 없습니다: {path}")
-
     df = pd.read_excel(p) if p.suffix.lower() in [".xlsx", ".xls"] else pd.read_csv(p)
 
     variants = {
@@ -91,7 +206,6 @@ def load_events(path: str) -> pd.DataFrame:
             s = s.replace(".", "-")
         try: return parser.parse(s).date()
         except: return None
-
     def to_time(x):
         if pd.isna(x): return None
         try:
@@ -112,23 +226,16 @@ def load_events(path: str) -> pd.DataFrame:
 
 @st.cache_data
 def load_bus(path: str) -> pd.DataFrame:
-    """
-    bus_data.xlsx
-    필요한 컬럼: start_date, start_time, end_date, end_time, ARS_ID, 정류소명, x좌표(lon), y좌표(lat)
-    """
     p = Path(path)
-    if not p.exists():
-        return pd.DataFrame()
+    if not p.exists(): return pd.DataFrame()
     df = pd.read_excel(p)
 
     def to_date(x):
         if pd.isna(x): return None
         s = str(x).strip()
-        if re.match(r'^\d{4}\.\d{1,2}\.\d{1,2}$', s):
-            s = s.replace(".", "-")
+        if re.match(r'^\d{4}\.\d{1,2}\.\d{1,2}$', s): s = s.replace(".", "-")
         try: return parser.parse(s).date()
         except: return None
-
     def to_time(x):
         if pd.isna(x): return None
         try:
@@ -136,72 +243,46 @@ def load_bus(path: str) -> pd.DataFrame:
             return f"{t.hour:02d}:{t.minute:02d}"
         except: return None
 
-    # 유연 컬럼명 매핑
     cols = {c: str(c).strip().lower() for c in df.columns}
     def pick(*names):
         for n in names:
             for c, lc in cols.items():
-                if lc == n:
-                    return c
+                if lc == n: return c
         return None
 
-    c_sd = pick("start_date","시작일")
-    c_st = pick("start_time","시작시간")
-    c_ed = pick("end_date","종료일")
-    c_et = pick("end_time","종료시간")
+    c_sd = pick("start_date","시작일"); c_st = pick("start_time","시작시간")
+    c_ed = pick("end_date","종료일");   c_et = pick("end_time","종료시간")
     c_ars= pick("ars_id","ars","정류장id")
     c_nm = pick("정류소명","정류장명","stop_name")
-    c_x  = pick("x좌표","x","lon","lng")
-    c_y  = pick("y좌표","y","lat")
+    c_x  = pick("x좌표","x","lon","lng"); c_y  = pick("y좌표","y","lat")
+    if any(c is None for c in [c_sd,c_st,c_ed,c_et,c_ars,c_nm,c_x,c_y]): return pd.DataFrame()
 
-    req = [c_sd,c_st,c_ed,c_et,c_ars,c_nm,c_x,c_y]
-    if any(c is None for c in req):
-        return pd.DataFrame()
-
-    # ARS_ID → 숫자/점 제거 후 5자리 0-padding
-    ars_series = (
-        df[c_ars]
-        .astype(str)
-        .map(lambda s: re.sub(r"\D", "", s))
-        .map(lambda s: s.zfill(5))
-    )
-
+    ars_series = df[c_ars].astype(str).map(lambda s: re.sub(r"\D", "", s)).map(lambda s: s.zfill(5))
     out = pd.DataFrame({
         "start_date": df[c_sd].apply(to_date),
         "start_time": df[c_st].apply(to_time),
         "end_date":   df[c_ed].apply(to_date),
         "end_time":   df[c_et].apply(to_time),
         "ARS_ID":     ars_series,
-        "정류소명":       df[c_nm].astype(str),
+        "정류소명":     df[c_nm].astype(str),
         "lon":        pd.to_numeric(df[c_x], errors="coerce"),
         "lat":        pd.to_numeric(df[c_y], errors="coerce"),
     })
-    out = out.dropna(subset=["start_date","end_date","lon","lat"]).reset_index(drop=True)
-    return out
+    return out.dropna(subset=["start_date","end_date","lon","lat"]).reset_index(drop=True)
 
 @st.cache_data
 def load_routes(path: str) -> pd.DataFrame:
-    """
-    routes_final.csv (예시 컬럼: date, ars_id, route)
-    """
     p = Path(path)
-    if not p.exists():
-        return pd.DataFrame(columns=["date","ars_id","route"])
+    if not p.exists(): return pd.DataFrame(columns=["date","ars_id","route"])
     df = pd.read_csv(p, dtype={"ars_id": str, "route": str})
 
     def to_date(x):
-        try:
-            return parser.parse(str(x)).date()
-        except Exception:
-            return None
+        try: return parser.parse(str(x)).date()
+        except Exception: return None
 
     df["date"] = df["date"].apply(to_date)
-    df["ars_id"] = (
-        df["ars_id"].astype(str)
-        .str.replace(r"\D", "", regex=True)
-        .str.zfill(5)
-    )
-    df["route"] = df["route"].fillna("").astype(str).str.strip()
+    df["ars_id"] = df["ars_id"].astype(str).str.replace(r"\D", "", regex=True).str.zfill(5)
+    df["route"]  = df["route"].fillna("").astype(str).str.strip()
     return df.dropna(subset=["date","ars_id"]).reset_index(drop=True)
 
 def color_by_headcount(h):
@@ -210,33 +291,25 @@ def color_by_headcount(h):
         if n >= 1000: return "#ef4444"
         if n >= 500:  return "#f59e0b"
         return "#3b82f6"
-    except:
-        return "#3b82f6"
+    except: return "#3b82f6"
 
 def df_to_month_dots(df: pd.DataFrame):
-    events = []
+    events=[]
     for _, r in df.iterrows():
-        start_iso = f"{r['_date']}T{r['_start']}:00"
-        end_iso   = f"{r['_date']}T{r['_end']}:00"
-        events.append({
-            "title": "",
-            "start": start_iso,
-            "end": end_iso,
-            "display": "list-item",
-            "color": color_by_headcount(r["_head"]),
-        })
+        start_iso=f"{r['_date']}T{r['_start']}:00"
+        end_iso  =f"{r['_date']}T{r['_end']}:00"
+        events.append({"title":"", "start":start_iso, "end":end_iso,
+                       "display":"list-item", "color":color_by_headcount(r["_head"])})
     return events
 
-def filter_by_day(df: pd.DataFrame, d: date) -> pd.DataFrame:
-    return df[df["_date"] == d].sort_values(by=["_start","_end","_loc"])
+def filter_by_day(df: pd.DataFrame, d: date)->pd.DataFrame:
+    return df[df["_date"]==d].sort_values(by=["_start","_end","_loc"])
 
-def get_bus_rows_for_date(bus_df: pd.DataFrame, d: date) -> pd.DataFrame:
-    if bus_df is None or bus_df.empty:
-        return pd.DataFrame()
-    m = (bus_df["start_date"] <= d) & (bus_df["end_date"] >= d)
-    return bus_df[m].copy()
+def get_bus_rows_for_date(bus_df: pd.DataFrame, d: date)->pd.DataFrame:
+    if bus_df is None or bus_df.empty: return pd.DataFrame()
+    return bus_df[(bus_df["start_date"]<=d)&(bus_df["end_date"]>=d)].copy()
 
-# -------------- 텍스트 전처리/키워드 --------------
+# ---------------- 텍스트 전처리 ----------------
 _STOPWORDS = {
     "그리고","그러나","하지만","또는","및","때문","때문에","대한","관련","대해",
     "여러분","정도","부분","등","좀","너무","수","것","거","이것","저것","우리",
@@ -246,263 +319,175 @@ _STOPWORDS = {
     "으로","로","에서","에게","에는","에","의","을","를","이","가","와","과","도","만","보다",
 }
 _SUFFIX_PAT = re.compile(
-    r"(입니다|합니다|하십시오|해주세요|해주시기|해주시길|해주시면|해주십시오|"
-    r"되겠습니다|되겠습|되었습|되었으면|되면|되어|되었습니다|되는데|않습니다|않아요|"
+    r"(입니다|합니다|십시오|해주세요|해주시기|해주시길|해주시면|해주십시오|"
+    r"되겠습니다|되었습|되었으면|되면|되어|되었습니다|되는데|않습니다|않아요|"
     r"같습니다|하겠습니다|부탁드립니다|감사합니다|감사하겠습니다|해요|했어요|합니다만)$"
 )
-def strip_suffix(tok: str) -> str:
-    tok = re.sub(_SUFFIX_PAT, "", tok);   return tok
-def tokenize_ko(s: str):
-    if not isinstance(s, str): return []
+def strip_suffix(tok:str)->str: return re.sub(_SUFFIX_PAT, "", tok)
+
+def tokenize_ko(s:str):
+    if not isinstance(s,str): return []
     cand = re.findall(r"[가-힣A-Za-z0-9]+", s)
-    out = []
+    out=[]
     for t in cand:
-        t = strip_suffix(t)
-        if len(t) < 2:  # 한 글자 제거
-            continue
-        if t in _STOPWORDS:
-            continue
+        t=strip_suffix(t)
+        if len(t)<2: continue
+        if t in _STOPWORDS: continue
         out.append(t)
     return out
-def make_bigrams(tokens, join_str=" "):
-    return [join_str.join(pair) for pair in zip(tokens, tokens[1:])]
-def build_wordcloud_image(fb_df: pd.DataFrame, date_filter=None, use_bigrams=False,
-                         font_path="data/Nanum_Gothic/NanumGothic-Regular.ttf"):
+
+def make_bigrams(tokens, join_str=" "): return [join_str.join(p) for p in zip(tokens,tokens[1:])]
+
+def build_wordcloud_image(fb_df, date_filter=None, use_bigrams=False,
+                          font_path="data/Nanum_Gothic/NanumGothic-Regular.ttf"):
     if not WORDCLOUD_AVAILABLE: return None
     if fb_df is None or fb_df.empty or "feedback" not in fb_df.columns: return None
     df = fb_df.copy()
     if date_filter is not None and "date" in df.columns:
-        df = df[df["date"].astype(str) == str(date_filter)]
+        df = df[df["date"].astype(str)==str(date_filter)]
     texts = df["feedback"].dropna().astype(str).tolist()
     if not texts: return None
-    counter = Counter()
+    counter=Counter()
     for t in texts:
         toks = tokenize_ko(t)
-        if use_bigrams:
-            toks = make_bigrams(toks)
+        if use_bigrams: toks = make_bigrams(toks)
         counter.update(toks)
     if not counter: return None
     fp = font_path if Path(font_path).exists() else None
     wc = WordCloud(font_path=fp, width=1200, height=600, background_color="white", colormap="tab20c")
     return wc.generate_from_frequencies(counter).to_image()
-def top_terms_from_feedback(fb_df, date_filter=None, use_bigrams=False, top_k=20):
-    if fb_df is None or fb_df.empty or "feedback" not in fb_df.columns:
-        return pd.DataFrame(columns=["term","count","pct"])
-    df = fb_df.copy()
-    if date_filter is not None and "date" in df.columns:
-        df = df[df["date"].astype(str) == str(date_filter)]
-    texts = df["feedback"].dropna().astype(str).tolist()
-    if not texts:
-        return pd.DataFrame(columns=["term","count","pct"])
-    counter = Counter()
-    for t in texts:
-        toks = tokenize_ko(t)
-        if use_bigrams:
-            toks = make_bigrams(toks)
-        counter.update(toks)
-    if not counter:
-        return pd.DataFrame(columns=["term","count","pct"])
-    items = counter.most_common(top_k)
-    out = pd.DataFrame(items, columns=["term","count"])
-    out["pct"] = (out["count"] / counter.total() * 100).round(1)
-    return out
-def load_feedback(path="data/feedback.csv"):
-    p = Path(path)
-    if not p.exists():
-        return pd.DataFrame()
-    try:
-        return pd.read_csv(p)
-    except Exception:
-        return pd.DataFrame()
 
-# ---------- 상세 페이지 ----------
+def load_feedback(path="data/feedback.csv"):
+    p=Path(path)
+    if not p.exists(): return pd.DataFrame()
+    try: return pd.read_csv(p)
+    except Exception: return pd.DataFrame()
+
+# ---------- 지식(텍스트) 로드 ----------
+@st.cache_data
+def load_all_txt(data_dir="data/chatbot"):
+    texts=[]; p=Path(data_dir)
+    if not p.exists(): return ""
+    for path in p.glob("*.txt"):
+        try:
+            with open(path,"r",encoding="utf-8") as f: texts.append(f.read())
+        except Exception as e: st.warning(f"{path} 읽기 오류: {e}")
+    return "\n\n".join(texts)
+
+all_texts = load_all_txt()
+
+# ====================== 상세 페이지 ======================
 def render_detail(df_all: pd.DataFrame, bus_df: pd.DataFrame, routes_df: pd.DataFrame, d: date, idx: int):
     day_df = filter_by_day(df_all, d)
-    if len(day_df) == 0 or idx < 0 or idx >= len(day_df):
+    if len(day_df)==0 or idx<0 or idx>=len(day_df):
         st.error("상세 정보를 찾을 수 없어요.")
         if st.button("← 목록으로"):
-            st.query_params.clear()
-            st.rerun()
+            st.query_params.clear(); st.rerun()
         return
-
-    row = day_df.iloc[idx]
-
-    WEEK_KO = ["월","화","수","목","금","토","일"]
-    st.markdown(f"## {d.month}월 {d.day}일({WEEK_KO[d.weekday()]}) 상세 정보")
     if st.button("← 목록으로"):
-        st.query_params.clear()
-        st.rerun()
+        st.query_params.clear(); st.rerun()
+    row = day_df.iloc[idx]
+    WEEK_KO=["월","화","수","목","금","토","일"]
+    st.markdown(f"#### {d.month}월 {d.day}일({WEEK_KO[d.weekday()]}) 상세 정보")
 
-    # (1) 오늘의 집회/시위
-    st.subheader("오늘의 집회/시위")
-    time_str = f"{row['_start']} ~ {row['_end']}"
-    loc_str  = f"{(row['_dist']+' ') if row['_dist'] not in ['','nan','None'] else ''}{row['_loc']}"
-    if pd.notna(row["_head"]) and str(row["_head"]).strip() != "":
-        try: head_str = f"{int(row['_head'])}명"
-        except: head_str = f"{row['_head']}명"
-    else:
-        head_str = ""
+
+    st.markdown("###### 오늘의 집회/시위")
+    time_str=f"{row['_start']} ~ {row['_end']}"
+    loc_str = f"{(row['_dist']+' ') if row['_dist'] not in ['','nan','None'] else ''}{row['_loc']}"
+    if pd.notna(row["_head"]) and str(row["_head"]).strip()!="":
+        try: head_str=f"{int(row['_head'])}명"
+        except: head_str=f"{row['_head']}명"
+    else: head_str=""
     keywords = str(row["_memo"]).strip() if str(row["_memo"]).strip() not in ["nan","None"] else ""
     info_df = pd.DataFrame([[time_str, loc_str, head_str, keywords]],
                            columns=["집회 시간","집회 장소(행진로)","신고 인원","관련 이슈"])
     st.table(info_df)
 
-    # (1-1) 버스 우회 정보 + 지도 (+노선)
-    st.markdown("### 버스 우회 정보")
+    st.markdown("###### 버스 우회 정보")
     bus_rows = get_bus_rows_for_date(bus_df, d)
-
-    # routes_final.csv 와 결합 (같은 날짜 d, 같은 정류장 ARS_ID)
-    route_slice = pd.DataFrame()
-    if routes_df is not None and not routes_df.empty:
-        route_slice = routes_df[routes_df["date"] == d].copy()
+    route_slice = routes_df[routes_df["date"]==d].copy() if routes_df is not None and not routes_df.empty else pd.DataFrame()
 
     if bus_rows.empty:
         st.caption("※ 해당 날짜의 버스 우회 정보가 없습니다.")
     else:
         if not route_slice.empty:
-            # 정류장별 노선 리스트 합치기
-            agg = (route_slice
-                   .dropna(subset=["ars_id","route"])
-                   .groupby("ars_id")["route"]
-                   .apply(lambda s: ", ".join(sorted(set(s))))
-                   .rename("노선"))
+            agg = (route_slice.dropna(subset=["ars_id","route"])
+                   .groupby("ars_id")["route"].apply(lambda s:", ".join(sorted(set(s))))).rename("노선")
             bus_rows = bus_rows.merge(agg, left_on="ARS_ID", right_index=True, how="left")
         else:
-            bus_rows["노선"] = ""
+            bus_rows["노선"]=""
 
-        # 표
         bus_view = bus_rows[["start_time","end_time","ARS_ID","정류소명","노선"]].rename(
-            columns={"start_time":"시작 시간","end_time":"종료 시간","ARS_ID":"버스 정류소 번호","정류소명":"버스 정류소 명"}
-        )
+            columns={"start_time":"시작 시간","end_time":"종료 시간","ARS_ID":"버스 정류소 번호","정류소명":"버스 정류소 명"})
         st.table(bus_view.reset_index(drop=True))
 
-        # 지도: 마커 + 정류소 번호 + (툴팁에 노선)
         map_df = bus_rows[["lat","lon","정류소명","ARS_ID","노선"]].copy()
         if not map_df.empty:
-            view_state = pdk.ViewState(
-                latitude=float(map_df["lat"].mean()),
-                longitude=float(map_df["lon"].mean()),
-                zoom=16
-            )
-            point_layer = pdk.Layer(
-                "ScatterplotLayer",
-                data=map_df,
-                get_position='[lon, lat]',
-                get_radius=25,
-                get_fill_color=[0, 122, 255, 200],
-                pickable=True,
-            )
-            tooltip = {
-                "html": "<b>{정류소명}</b><br/>정류소 번호: {ARS_ID}<br/>노선: {노선}",
-                "style": {"backgroundColor": "white", "color": "black"}
-            }
-            st.pydeck_chart(pdk.Deck(
-                layers=[point_layer],
-                initial_view_state=view_state,
-                tooltip=tooltip
-            ))
-
-    # (2) 기사 영역 (placeholder)
-    st.subheader("집회/시위 관련 기사 보기")
+            view_state = pdk.ViewState(latitude=float(map_df["lat"].mean()),
+                                       longitude=float(map_df["lon"].mean()), zoom=16)
+            point_layer = pdk.Layer("ScatterplotLayer", data=map_df,
+                                    get_position='[lon, lat]', get_radius=25,
+                                    get_fill_color=[0,122,255,200], pickable=True)
+            tooltip = {"html":"<b>{정류소명}</b><br/>정류소 번호: {ARS_ID}<br/>노선: {노선}",
+                       "style":{"backgroundColor":"white","color":"black"}}
+            st.pydeck_chart(pdk.Deck(layers=[point_layer], initial_view_state=view_state, tooltip=tooltip, map_style="road"))
+    st.markdown("###### 집회/시위 관련 기사 보기")
     st.caption("※ 크롤링 연동 예정. 데이터 준비되면 이 영역에 노출됩니다.")
     st.empty()
 
-    # (2.5) 건의사항 키워드 요약 (워드클라우드 + Top N + 예시)
-    st.subheader("건의사항 키워드 요약")
+    # --- 피드백 작성/저장 ---
+    st.markdown("###### 오늘의 집회/시위에 대한 여러분의 건의사항을 남겨주세요")
+
+    with st.form("feedback_form", clear_on_submit=True):
+        fb = st.text_area("의견을 작성해주세요 (관리자에게 전달됩니다)", height=80, key="fb_detail")
+        submitted = st.form_submit_button("등록")
+
+    if submitted:
+        if not fb.strip():
+            st.warning("내용을 입력해주세요.")
+        else:
+            save_path = Path("data/feedback.csv"); save_path.parent.mkdir(parents=True, exist_ok=True)
+            from hashlib import md5
+            row_key = f"{str(d)}|{row.get('_start')}|{row.get('_end')}|{row.get('_loc')}|{fb.strip()}"
+            dupe_key = md5(row_key.encode("utf-8")).hexdigest()
+
+            df_now = load_feedback(str(save_path))
+            if "dupe_key" not in df_now.columns: df_now["dupe_key"] = ""
+            if dupe_key in set(df_now["dupe_key"].astype(str)):
+                st.info("이미 같은 내용이 저장되어 있습니다.")
+            else:
+                row_dict = {
+                    "saved_at": datetime.now().isoformat(timespec="seconds"),
+                    "date": str(d), "start": row.get("_start",""), "end": row.get("_end",""),
+                    "location": row.get("_loc",""), "district": row.get("_dist",""),
+                    "reported_head": row.get("_head",""), "memo": row.get("_memo",""),
+                    "feedback": fb.strip(), "dupe_key": dupe_key,
+                }
+                pd.concat([df_now, pd.DataFrame([row_dict])], ignore_index=True)\
+                .to_csv(save_path, index=False, encoding="utf-8-sig")
+                st.success("건의사항이 저장되었습니다. 감사합니다!")
+
+    # --- 건의사항 키워드 요약 ---
+    st.markdown("###### 건의사항 키워드 요약")
     fb_all = load_feedback("data/feedback.csv")
     if fb_all.empty:
         st.caption("아직 저장된 건의사항이 없습니다.")
     else:
-        colA, colB = st.columns([1,1])
-        with colA:
-            only_today = st.toggle("이 날짜만 보기", value=True, key="wc_today")
-            use_bigrams = st.toggle("연결어(2단어)로 보기", value=False, key="wc_bigram")
-            img = build_wordcloud_image(
-                fb_all,
-                date_filter=d if only_today else None,
-                use_bigrams=use_bigrams,
-                font_path="data/Nanum_Gothic/NanumGothic-Regular.ttf"
-            )
-            if img is not None:
-                st.image(img, use_container_width=True)
-            else:
-                st.caption("워드클라우드를 만들 수 있는 텍스트가 부족합니다.")
-        with colB:
-            top_df = top_terms_from_feedback(
-                fb_all,
-                date_filter=d if only_today else None,
-                use_bigrams=use_bigrams,
-                top_k=20
-            )
-            if top_df.empty:
-                st.caption("표시할 키워드가 없습니다.")
-            else:
-                st.markdown("**상위 키워드/표현 TOP 20**")
-                chart = (
-                    alt.Chart(top_df)
-                    .mark_bar()
-                    .encode(
-                        x=alt.X("count:Q", title="건수"),
-                        y=alt.Y("term:N", sort="-x", title=None),
-                        tooltip=[alt.Tooltip("term:N", title="용어"),
-                                 alt.Tooltip("count:Q", title="건수"),
-                                 alt.Tooltip("pct:Q", title="비율(%)")]
-                    )
-                    .properties(height=420)
-                )
-                st.altair_chart(chart, use_container_width=True)
+        only_today  = st.toggle("이 날짜만 보기", value=True,  key="wc_today_only")
+        use_bigrams = st.toggle("연결어(2단어)로 보기", value=False, key="wc_bigram_only")
+        img = build_wordcloud_image(
+            fb_all, date_filter=d if only_today else None,
+            use_bigrams=use_bigrams, font_path="data/Nanum_Gothic/NanumGothic-Regular.ttf"
+        )
+        st.image(img, use_container_width=True) if img is not None else st.caption("워드클라우드 데이터가 부족합니다.")
 
-                sel = st.selectbox("예시 문장 보기: 키워드 선택", ["선택 안 함"] + top_df["term"].tolist())
-                if sel != "선택 안 함":
-                    _df = fb_all.copy()
-                    if only_today and "date" in _df.columns:
-                        _df = _df[_df["date"].astype(str) == str(d)]
-                    ex = _df[_df["feedback"].str.contains(re.escape(sel), case=False, na=False)] \
-                         .tail(5)["feedback"]
-                    if ex.empty:
-                        st.caption("해당 키워드의 예시가 없습니다.")
-                    else:
-                        st.markdown("**최근 예시 5건**")
-                        for i, line in enumerate(ex, 1):
-                            st.write(f"{i}. {line}")
 
-    # (3) 건의사항 입력
-    st.subheader("오늘의 집회/시위에 대한 여러분의 건의사항을 남겨주세요")
-    fb = st.text_area("의견을 작성해주세요 (관리자에게 전달됩니다)", height=140, key="fb_detail")
-    if st.button("등록"):
-        if not fb.strip():
-            st.warning("내용을 입력해주세요.")
-        else:
-            save_path = Path("data/feedback.csv")
-            save_path.parent.mkdir(parents=True, exist_ok=True)
-            row_dict = {
-                "saved_at": datetime.now().isoformat(timespec="seconds"),
-                "date": str(d),
-                "start": row["_start"],
-                "end": row["_end"],
-                "location": row["_loc"],
-                "district": row["_dist"],
-                "reported_head": row["_head"],
-                "memo": row["_memo"],
-                "feedback": fb.strip(),
-            }
-            if save_path.exists():
-                prev = pd.read_csv(save_path)
-                new  = pd.concat([prev, pd.DataFrame([row_dict])], ignore_index=True)
-            else:
-                new = pd.DataFrame([row_dict])
-            new.to_csv(save_path, index=False, encoding="utf-8-sig")
-            st.success("건의사항이 저장되었습니다. 감사합니다!")
-            st.query_params.clear()
-
+# ====================== 메인 화면 ======================
 def render_main_page(df, bus_df, routes_df):
-    """메인 페이지 렌더링 함수"""
     st.markdown("### 이달의 집회")
     st.caption("이번 달의 집회를 한눈에 확인해보세요.")
-
     left, right = st.columns(2)
 
-    # 왼쪽: 캘린더
     with left:
         with st.container(border=True):
             events = df_to_month_dots(df)
@@ -511,66 +496,102 @@ def render_main_page(df, bus_df, routes_df):
                 "locale": "ko",
                 "height": CALENDAR_H,
                 "firstDay": 0,
-                "headerToolbar": {"left":"prev,next today", "center":"title", "right":""},
+                "headerToolbar": {
+                    "left": "prev",
+                    "center": "title",
+                    "right": "next"
+                },
+                "buttonIcons": {   # 기본 아이콘 없애기
+                    "prev": "",
+                    "next": ""
+                },
                 "dayMaxEventRows": True,
             }
-            calendar(events=events, options=options)
+            calendar(events=events, options=options, custom_css="""
+/* 버튼 기본 스타일 */
+.fc .fc-button {
+    background: #fff !important;
+    border: 1px solid #000 !important;
+    color: #000 !important;
+    border-radius: 50% !important;
+    width: 40px !important;
+    height: 40px !important;
+    font-size: 16px !important;
+    display: flex !important;
+    justify-content: center !important;
+    align-items: center !important;
+    padding: 0 !important;
+}
 
-    # 오른쪽: 날짜 네비 + 카드 목록(HTML 링크, 고정 높이 컨테이너)
-    if "sel_date" not in st.session_state:
-        st.session_state.sel_date = date.today()
+/* 기존 아이콘 숨기기 */
+.fc .fc-icon {
+    display: none !important;
+}
+
+/* prev 버튼 */
+.fc .fc-prev-button:after {
+  content: "◀";
+  font-size: 20px;
+  color: #000;
+}
+
+/* next 버튼 */
+.fc .fc-next-button:after {
+  content: "▶";
+  font-size: 20px;
+  color: #000;
+}
+
+/* "더보기" 링크 스타일 */
+.fc-daygrid-more-link {
+  white-space: pre-line !important;  /* 공백을 줄바꿈으로 처리 */
+  font-size: 14px !important;
+  line-height: 1.2 !important;
+}
+
+/* 'more' 앞에 줄바꿈 넣기 */
+.fc-daygrid-more-link::before {
+  content: attr(aria-label);
+  white-space: pre-line;
+}
+""")
+
+    if "sel_date" not in st.session_state: st.session_state.sel_date = date.today()
 
     with right:
         with st.container(border=True):
-            nav1, nav2, nav3, nav4 = st.columns([1, 2.2, 1, 1])
+            nav1, nav2, nav3 = st.columns([1, 1, 1])
             with nav1:
                 if st.button("◀", use_container_width=True):
-                    d = st.session_state.sel_date
-                    st.session_state.sel_date = d.fromordinal(d.toordinal() - 1)
+                    d=st.session_state.sel_date; st.session_state.sel_date=d.fromordinal(d.toordinal()-1)
             with nav2:
-                dnew = st.date_input("날짜 선택", value=st.session_state.sel_date, label_visibility="collapsed")
-                if dnew != st.session_state.sel_date:
-                    st.session_state.sel_date = dnew
+                if st.button("오늘", use_container_width=True): st.session_state.sel_date=date.today()
             with nav3:
-                if st.button("오늘", use_container_width=True):
-                    st.session_state.sel_date = date.today()
-            with nav4:
                 if st.button("▶", use_container_width=True):
-                    d = st.session_state.sel_date
-                    st.session_state.sel_date = d.fromordinal(d.toordinal() + 1)
+                    d=st.session_state.sel_date; st.session_state.sel_date=d.fromordinal(d.toordinal()+1)
 
             sel_date = st.session_state.sel_date
-            WEEK_KO = ["월","화","수","목","금","토","일"]
+            WEEK_KO=["월","화","수","목","금","토","일"]
             st.markdown(f"#### {sel_date.month}월 {sel_date.day}일({WEEK_KO[sel_date.weekday()]}) 집회 일정 안내")
 
             day_df = filter_by_day(df, sel_date)
-
-            # 공백 없이 스크롤 컨테이너에 카드 HTML을 일괄 삽입
-            html = [f"<div style='height:{PANEL_BODY_H}px; overflow-y:auto; padding-right:8px;'>"]
-
-            if len(day_df) == 0:
+            html=[f"<div style='height:{PANEL_BODY_H}px; overflow-y:auto; padding-right:8px;'>"]
+            if len(day_df)==0:
                 html.append('<div class="sub">등록된 집회가 없습니다.</div>')
             else:
-                for i, (_, r) in enumerate(day_df.iterrows()):
-                    # 장소(관할서 있으면 접두)
+                for i,(_,r) in enumerate(day_df.iterrows()):
                     loc_line = r["_loc"]
-                    if r["_dist"] and str(r["_dist"]).strip() not in ["nan", "None", ""]:
+                    if r["_dist"] and str(r["_dist"]).strip() not in ["nan","None",""]:
                         loc_line = f"{r['_dist']}  {loc_line}"
-
-                    # 메타(신고 인원, 메모)
-                    metas = []
-                    if pd.notna(r["_head"]) and str(r["_head"]).strip() != "":
-                        try:
-                            metas.append(f"신고 인원 {int(r['_head'])}명")
-                        except:
-                            metas.append(f"신고 인원 {r['_head']}명")
-                    if r["_memo"] and str(r["_memo"]).strip() not in ["nan", "None", ""]:
+                    metas=[]
+                    if pd.notna(r["_head"]) and str(r["_head"]).strip()!="":
+                        try: metas.append(f"신고 인원 {int(r['_head'])}명")
+                        except: metas.append(f"신고 인원 {r['_head']}명")
+                    if r["_memo"] and str(r["_memo"]).strip() not in ["nan","None",""]:
                         metas.append(str(r["_memo"]))
-                    meta_text = " · ".join(metas)
-                    meta_html = f"<div class='meta'>{meta_text}</div>" if meta_text else ""
-
-                    href = f"?view=detail&date={sel_date.isoformat()}&idx={i}"
-
+                    meta_text=" · ".join(metas)
+                    meta_html=f"<div class='meta'>{meta_text}</div>" if meta_text else ""
+                    href=f"?view=detail&date={sel_date.isoformat()}&idx={i}"
                     html.append(textwrap.dedent(f"""
                         <a class="card-link" href="{href}">
                           <div class="card">
@@ -580,94 +601,57 @@ def render_main_page(df, bus_df, routes_df):
                           </div>
                         </a>
                     """).strip())
-
             html.append("</div>")
             st.markdown("\n".join(html), unsafe_allow_html=True)
 
-
-# 0. 챗봇 상수
-import os
-from dotenv import load_dotenv
-load_dotenv()
-API_KEY = os.getenv("OPENAI_API_KEY")
-
-# 1. TXT 데이터 불러오기
-def load_all_txt(data_dir="data/chatbot"):
-    texts = []
-    p = Path(data_dir)
-    if not p.exists():
-        return ""
-    for path in p.glob("*.txt"):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                texts.append(f.read())
-        except Exception as e:
-            st.warning(f"{path} 읽기 오류: {e}")
-    return "\n\n".join(texts)
-
-all_texts = load_all_txt()
-
+# ====================== 챗봇 (프레임 없음/정렬 반영) ======================
 if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []   # 대화 저장용 리스트
+    st.session_state.chat_history=[]
 if "input_counter" not in st.session_state:
-    st.session_state.input_counter = 0   # 입력창 초기화용 카운터
+    st.session_state.input_counter=0
 
-# 2. chatbot page
 def render_chatbot_page():
-    st.markdown(
-        """
-        <style>
-        .chat-bubble {
-            max-width: 70%;
-            padding: 12px 18px;
-            border-radius: 18px;
-            margin: 6px 0;
-            font-size: 16px;
-            line-height: 1.5;
-            word-wrap: break-word;
-        }
-        .user-bubble {
-            background-color: #3f51b5;
-            color: white;
-            margin-left: auto;
-        }
-        .bot-bubble {
-            background-color: #f1f1f1;
-            color: black;
-            margin-right: auto;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+    # 헤드라인
+    st.subheader("버스 우회 정보 확인하기")
+    st.markdown("###### 챗봇에게 내가 타는 버스의 우회 정보를 물어보세요.")
 
-    # 채팅 출력
-    for role, message in st.session_state.chat_history:
-        css_class = "user-bubble" if role == "user" else "bot-bubble"
-        st.markdown(f"<div class='chat-bubble {css_class}'>{message}</div>", unsafe_allow_html=True)
+    # 스크롤 되는 본문 (프레임/테두리 없음)
+    st.markdown('<div class="chat-wrap"><div class="chat-scroll" id="chat-scroll">', unsafe_allow_html=True)
 
-    # 입력창
-    col1, col2 = st.columns([8, 1])
-    with col1:
+    if not st.session_state.chat_history:
+        st.session_state.chat_history.append((
+            "bot",
+            "안녕하세요! 날짜와 노선을 알려주시면 우회 정보를 찾아드릴게요.\n예) 8월 15일 172번 우회 알려줘"
+        ))
+
+    # 풍선 렌더링: 사용자=오른쪽 파란색, 시스템=왼쪽 회색
+    for role, msg in st.session_state.chat_history:
+        row_cls = "msg-row user" if role=="user" else "msg-row"
+        bub_cls = "bubble user" if role=="user" else "bubble bot"
+        st.markdown(f'<div class="{row_cls}"><div class="{bub_cls}">{msg}</div></div>', unsafe_allow_html=True)
+
+    st.markdown("</div></div>", unsafe_allow_html=True)
+
+    # 입력줄 (프레임 밖 하단, 테두리 없음)
+    st.markdown('<div class="chat-input-area">', unsafe_allow_html=True)
+    c1, c2 = st.columns([8,1])
+    with c1:
         user_input = st.text_input(
-            "메시지를 입력하세요.",
+            "예: 8월 15일의 172번 버스 우회 정보를 알려줘",
             key=f"chat_input_{st.session_state.input_counter}",
-            placeholder="예: 8월 15일의 172번 버스 우회 정보를 알려줘",
-            label_visibility="collapsed"
+            label_visibility="collapsed",
         )
-    with col2:
-        send = st.button("전송")
+    with c2:
+        send = st.button("전송", use_container_width=True)
+    st.markdown('</div>', unsafe_allow_html=True)
 
-    # 버튼 클릭 시
+    # 전송
     if send and user_input.strip():
-        # 사용자 입력 저장
         st.session_state.chat_history.append(("user", user_input))
-
-        # GPT 호출
         if all_texts:
-            llm = ChatOpenAI(model_name="gpt-4-turbo", api_key=API_KEY)
+            llm = ChatOpenAI(model_name="gpt-4o-mini", api_key=API_KEY)
             prompt_template = PromptTemplate(
-                input_variables=["context", "question"],
+                input_variables=["context","question"],
                 template="""
 당신은 주어진 텍스트를 기반으로 질문에 답하는 Q&A 챗봇입니다.  
 아래는 참고할 수 있는 텍스트입니다:
@@ -685,61 +669,124 @@ def render_chatbot_page():
                 response = llm.predict(prompt)
         else:
             response = "❌ 텍스트 데이터가 없어서 답변할 수 없습니다."
-
         st.session_state.chat_history.append(("bot", response))
-
-        # 입력창 초기화를 위해 counter 증가
         st.session_state.input_counter += 1
         st.rerun()
 
+# ====================== 라우팅 ======================
 
-# ===================== 메인/라우팅 =====================
-st.markdown("<div class='app-header'>집회/시위 알림 서비스</div>", unsafe_allow_html=True)
-
-# 좌/우 높이 동기화
 CALENDAR_H = 520
 HEADER_OFFSET = 85
-PANEL_BODY_H = CALENDAR_H - HEADER_OFFSET # 오른쪽 스크롤 영역 높이
+PANEL_BODY_H = CALENDAR_H - HEADER_OFFSET
 
-# 데이터 경로
-DATA_PATH = st.sidebar.text_input(
-    "집회 데이터 경로 (xlsx/csv)",
-    value="data/protest_data.xlsx"
-)
-BUS_PATH = st.sidebar.text_input(
-    "버스 우회 데이터 경로 (xlsx)",
-    value="data/bus_data.xlsx"
-)
-ROUTES_PATH = st.sidebar.text_input(
-    "버스 노선 데이터 경로 (CSV: routes_final.csv)",
-    value="/Users/byun-yewon/KT_project/routes_final.csv"
-)
+# 경로
+DATA_PATH   = st.sidebar.text_input("집회 데이터 경로 (xlsx/csv)", value="data/protest_data.xlsx")
+BUS_PATH    = st.sidebar.text_input("버스 우회 데이터 경로 (xlsx)", value="data/bus_data.xlsx")
+ROUTES_PATH = st.sidebar.text_input("버스 노선 데이터 경로 (CSV: routes_final.csv)", value="routes_final.csv")
 
-    # 데이터 로드
+# 로드
 try:
-    df = load_events(DATA_PATH)
-    bus_df = load_bus(BUS_PATH)
+    df        = load_events(DATA_PATH)
+    bus_df    = load_bus(BUS_PATH)
     routes_df = load_routes(ROUTES_PATH)
 except Exception as e:
     st.error(f"데이터 로드 오류: {e}")
     st.stop()
-    
-# ---- 라우팅: 쿼리 파라미터(detail 모드) ----
+
+# 상세/목록
 qp = st.query_params
-view = qp.get("view", "")
-if view == "detail":
-    d_str = qp.get("date", "")
-    idx_str = qp.get("idx", "0")
+if qp.get("view","") == "detail":
     try:
-        d_sel = parser.parse(d_str).date()
-        idx_sel = int(idx_str)
+        d_sel = parser.parse(qp.get("date","")).date()
+        idx_sel = int(qp.get("idx","0"))
         render_detail(df, bus_df, routes_df, d_sel, idx_sel)
     except Exception:
         st.warning("잘못된 링크입니다. 목록으로 돌아갑니다.")
         st.query_params.clear()
 else:
     render_main_page(df, bus_df, routes_df)
+    # 챗봇
+    render_chatbot_page()
 
-st.subheader("버스 우회 정보 확인하기")
-st.markdown("###### 챗봇에게 내가 타는 버스의 우회 정보를 물어보세요.")
-render_chatbot_page()
+# ====================== 푸터 ======================
+jongno_logo = get_base64_of_image("data/assets/jongno_logo.png")
+kt_logo = get_base64_of_image("data/assets/kt_logo.png")
+
+st.markdown(
+    f"""
+    <style>
+      .site-footer {{
+        margin-top: 200px;
+        border: 1px solid #e5e7eb;
+        border-radius: 6px;
+        overflow: hidden;
+      }}
+      .site-footer .footer-top {{
+        background: #575757;
+        color: #ffffff;
+        text-align: center;
+        padding: 22px 16px 20px 16px;
+        line-height: 1.5;
+        font-size: 15px;
+      }}
+      .site-footer .footer-top .title {{
+        font-weight: 700;
+        letter-spacing: 0.2px;
+        margin-bottom: 4px;
+        display: block;
+      }}
+      .site-footer .footer-top .copy {{
+        font-size: 13px;
+        opacity: 0.95;
+      }}
+      .site-footer .footer-bottom {{
+        background: #ffffff;
+        padding: 18px 22px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+      }}
+      .site-footer .bottom-left {{
+        color: #111827;
+        font-size: 14px;
+        line-height: 1.6;
+      }}
+      .site-footer .bottom-left .who {{
+        font-weight: 700;
+        margin-bottom: 4px;
+      }}
+      .site-footer .bottom-right {{
+        display: flex;
+        align-items: center;
+        gap: 22px;
+      }}
+      .site-footer .bottom-right img {{
+        height: 40px;
+        display: block;
+      }}
+      @media (max-width: 720px) {{
+        .site-footer .footer-bottom {{ flex-direction: column; align-items: flex-start; gap: 12px; }}
+      }}
+    </style>
+
+    <div class="site-footer">
+      <div class="footer-top">
+        <span class="title">종로구청 × KT디지털인재장학생 5조</span>
+        <span class="copy">© 2025 KT디지털인재장학생 5조 All rights reserved</span>
+      </div>
+
+      <div class="footer-bottom">
+        <div class="bottom-left">
+          <div class="who">서비스를 제작한 사람들</div>
+          <div>KT 디지털인재장학생 | 강혜선 김민영 변예원 이은서 장진영 한태희</div>
+        </div>
+        <div class="bottom-right">
+          <img src="data:image/png;base64,{jongno_logo}" alt="종로구 로고" />
+          <img src="data:image/png;base64,{kt_logo}" alt="KT 로고" />
+        </div>
+      </div>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
