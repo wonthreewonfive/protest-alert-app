@@ -112,7 +112,7 @@ a.card-link .card:hover { border-color:#94a3b8; background:#f8fafc; }
 .gap-16 { height:16px; }
 .gap-24 { height:24px; }
 
-/* ====== (구) 채팅 벌룬 스타일(모달 내부에서 재사용) ====== */
+/* ====== (구) 채팅 벌룬 스타일(모달 내부) ====== */
 .chat-wrap { margin-top:4px; }
 .chat-scroll{ height:240px; overflow-y:auto; padding:10px 12px; background:#ffffff; }
 .msg-row{ display:flex; margin:8px 0; }
@@ -455,7 +455,7 @@ def render_news_cards_for_event(df_all: pd.DataFrame, row: pd.Series):
     if not items:
         st.caption("해당 시간대의 관련 기사를 찾지 못했습니다.")
         st.markdown("</div>", unsafe_allow_html=True)
-        st.markdown("<div class='gap-24'></div>", unsafe_allow_html=True)  # 다음 섹션 간격
+        st.markdown("<div class='gap-24'></div>", unsafe_allow_html=True)
         return
 
     html_parts = ["<div class='news-grid'>"]
@@ -476,7 +476,7 @@ def render_news_cards_for_event(df_all: pd.DataFrame, row: pd.Series):
     st.markdown("".join(html_parts), unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
-    st.markdown("<div class='gap-24'></div>", unsafe_allow_html=True)  # 다음 섹션 간격
+    st.markdown("<div class='gap-24'></div>", unsafe_allow_html=True)
 
 
 # ====================== 5) 상세 페이지(일자) ==================================
@@ -606,7 +606,12 @@ def render_detail(df_all: pd.DataFrame, bus_df: pd.DataFrame, routes_df: pd.Data
     else:
         only_today = st.toggle("이 날짜만 보기", value=True, key="wc_today_only")
         use_bigrams = st.toggle("연결어(2단어)로 보기", value=False, key="wc_bigram_only")
-        img = build_wordcloud_image(fb_all, date_filter=d if only_today else None, use_bigrams=use_bigrams, font_path="data/Nanum_Gothic/NanumGothic-Regular.ttf")
+        img = build_wordcloud_image(
+            fb_all,
+            date_filter=d if only_today else None,
+            use_bigrams=use_bigrams,
+            font_path="data/Nanum_Gothic/NanumGothic-Regular.ttf"
+        )
         if img is not None:
             st.image(img, use_container_width=True)
         else:
@@ -633,25 +638,61 @@ def render_main_page(df, bus_df, routes_df):
                 "height": CALENDAR_H,
                 "firstDay": 0,
                 "headerToolbar": {"left": "prev", "center": "title", "right": "next"},
-                "buttonIcons": {"prev": "", "next": ""},  # 기본 아이콘 제거(커스텀 사용)
+                "buttonIcons": {"prev": "", "next": ""},  # 기본 아이콘 제거
                 "dayMaxEventRows": True,
             }
-            calendar(events=events, options=options, custom_css="""
-/* 버튼 기본 스타일 */
-.fc .fc-button {
-  background:#fff !important; border:1px solid #000 !important; color:#000 !important;
-  border-radius:50% !important; width:40px !important; height:40px !important;
-  font-size:16px !important; display:flex !important; justify-content:center !important; align-items:center !important; padding:0 !important;
-}
-/* 숨긴 기본 아이콘 대신 after로 렌더 */
-.fc .fc-icon { display:none !important; }
-.fc .fc-prev-button:after { content:"◀"; font-size:20px; color:#000; }
-.fc .fc-next-button:after { content:"▶"; font-size:20px; color:#000; }
+            calendar(
+                events=events,
+                options=options,
+                custom_css="""
+/* ===== FullCalendar – Light theme override inside the widget iframe ===== */
 
-/* 'more'를 두 줄 처리 */
+/* 전체 배경/기본 글자색 */
+.fc,
+.fc .fc-scrollgrid,
+.fc .fc-daygrid,
+.fc-theme-standard .fc-scrollgrid {
+  background:#ffffff !important;
+  color:#111827 !important;
+}
+
+/* 격자선 */
+.fc-theme-standard td,
+.fc-theme-standard th {
+  border-color:#e5e7eb !important;
+}
+
+/* 헤더 타이틀 */
+.fc .fc-toolbar-title { color:#111827 !important; font-weight:700 !important; }
+
+/* 날짜 숫자 */
+.fc .fc-daygrid-day-number { color:#111827 !important; }
+
+/* 오늘 배경 */
+.fc .fc-day-today { background:#fff7ed !important; }
+
+/* 이벤트 / +n more 링크 */
+.fc .fc-daygrid-more-link,
+.fc .fc-event { color:#111827 !important; }
+
+/* 상단 prev/next 버튼 – 흰 배경 + 검은 테두리 */
+.fc .fc-button {
+  background:#fff !important;
+  border:1px solid #000 !important;
+  color:#000 !important;
+  border-radius:20px !important;
+}
+
+/* 기본 아이콘 숨기고 텍스트 아이콘으로 대체 */
+.fc .fc-icon { display:none !important; }
+.fc .fc-prev-button:after { content:"◀"; font-size:16px; }
+.fc .fc-next-button:after { content:"▶"; font-size:16px; }
+
+/* 'more' 두 줄 처리 */
 .fc-daygrid-more-link { white-space: pre-line !important; font-size:14px !important; line-height:1.2 !important; }
 .fc-daygrid-more-link::before { content: attr(aria-label); white-space: pre-line; }
-""")
+"""
+            )
 
     # --- 오른쪽: 일자 리스트
     if "sel_date" not in st.session_state:
