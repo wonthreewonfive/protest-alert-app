@@ -85,7 +85,7 @@ st.markdown(
 a.card-link { display:block; text-decoration:none; color:inherit; }
 a.card-link .card:hover { border-color:#94a3b8; background:#f8fafc; }
 
-/* FullCalendar: 도트/버튼 */
+/* FullCalendar: 도트/버튼 (페이지 전역, iframe 밖) */
 .fc .fc-daygrid-dot-event .fc-event-time,
 .fc .fc-daygrid-dot-event .fc-event-title,
 .fc .fc-daygrid-event-harness .fc-event-time,
@@ -100,7 +100,7 @@ a.card-link .card:hover { border-color:#94a3b8; background:#f8fafc; }
 .fc-daygrid-more-link::after { content:""; }
 
 /* ====== 뉴스 카드 ====== */
-.news-wrap { margin:0; } /* 기본 여백 제거 – 유틸로 제어 */
+.news-wrap { margin:0; }
 .news-grid { display:flex; flex-direction:column; gap:12px; }
 .news-card { display:flex; flex-direction:column; gap:6px; padding:14px 16px; border:1px solid #e5e7eb; border-radius:12px; background:#fff; }
 .news-title { font-size:16px; font-weight:700; color:#111827; line-height:1.35; }
@@ -112,7 +112,7 @@ a.card-link .card:hover { border-color:#94a3b8; background:#f8fafc; }
 .gap-16 { height:16px; }
 .gap-24 { height:24px; }
 
-/* ====== (구) 채팅 벌룬 스타일(모달 내부) ====== */
+/* ====== 채팅 벌룬/입력 ====== */
 .chat-wrap { margin-top:4px; }
 .chat-scroll{ height:240px; overflow-y:auto; padding:10px 12px; background:#ffffff; }
 .msg-row{ display:flex; margin:8px 0; }
@@ -121,7 +121,6 @@ a.card-link .card:hover { border-color:#94a3b8; background:#f8fafc; }
 .bubble.user{ background:#2A52BF; color:#fff; }
 .bubble.bot { background:#eeeeee; color:#000; }
 
-/* ====== 입력줄(모달 내부) ====== */
 .chat-input-area { padding:8px 0 0 0; }
 div[data-baseweb="input"] > div {
   background:#fff !important; border:1px solid #000 !important; border-radius:100px !important;
@@ -133,7 +132,7 @@ div.stButton > button{
 }
 div.stButton > button:hover{ background-color:#1d3e91; border:1px solid #1d3e91; color:#fff; }
 
-/* ====== FAB(우측 하단) ====== */
+/* ====== FAB ====== */
 .fab-chat {
   position: fixed; right: 24px; bottom: 24px;
   width: 56px; height: 56px; border-radius: 50%;
@@ -147,8 +146,6 @@ div.stButton > button:hover{ background-color:#1d3e91; border:1px solid #1d3e91;
 """,
     unsafe_allow_html=True,
 )
-
-
 # ====================== 2) 데이터 로드 함수 ================================
 @st.cache_data
 def load_events(path: str) -> pd.DataFrame:
@@ -322,15 +319,30 @@ def color_by_headcount(h):
 
 
 def df_to_month_dots(df: pd.DataFrame):
-    """FullCalendar용 월간 도트 이벤트"""
+    """FullCalendar용 월간 도트 이벤트 (+ 클릭 식별용 extendedProps 포함)"""
     events = []
     for _, r in df.iterrows():
-        start_iso = f"{r['_date']}T{r['_start']}:00"
-        end_iso = f"{r['_date']}T{r['_end']}:00"
+        d_iso = str(r["_date"])
+        st_iso = f"{r['_date']}T{r['_start']}:00"
+        ed_iso = f"{r['_date']}T{r['_end']}:00"
         events.append(
-            {"title": "", "start": start_iso, "end": end_iso, "display": "list-item", "color": color_by_headcount(r["_head"])}
+            {
+                "title": "",                     # 월 뷰에 텍스트 안 보이게(우린 점만)
+                "start": st_iso,
+                "end": ed_iso,
+                "display": "list-item",
+                "color": color_by_headcount(r["_head"]),
+                # 클릭 시 다시 찾아갈 열쇠들
+                "extendedProps": {
+                    "d": d_iso,
+                    "st": r["_start"],
+                    "ed": r["_end"],
+                    "loc": r["_loc"],
+                },
+            }
         )
     return events
+
 
 
 def filter_by_day(df: pd.DataFrame, d: date) -> pd.DataFrame:
@@ -641,7 +653,7 @@ def render_main_page(df, bus_df, routes_df):
                 "buttonIcons": {"prev": "", "next": ""},  # 기본 아이콘 제거
                 "dayMaxEventRows": True,
             }
-            calendar(
+            cal_res = calendar(
                 events=events,
                 options=options,
                 custom_css="""
@@ -693,6 +705,31 @@ def render_main_page(df, bus_df, routes_df):
 .fc-daygrid-more-link::before { content: attr(aria-label); white-space: pre-line; }
 """
             )
+            if cal_res and cal_res.get("eventClick"):
+                try:
+                    ev = cal_res["eventClick"]["event"]
+                    ep = ev.get("extendedProps", {})
+                    d = parser.parse(ep.get("d", "")).date()
+                    stime = ep.get("st", "")
+                    etime = ep.get("ed", "")
+                    loc = ep.get("loc", "")
+
+                    # 해당 날짜의 정렬 규칙대로 인덱스 계산
+                    day_df = filter_by_day(df, d)
+                    idx = 0
+                    for i, (_, rr) in enumerate(day_df.iterrows()):
+                        if rr["_start"] == stime and rr["_end"] == etime and rr["_loc"] == loc:
+                            idx = i
+                            break
+
+                    # 쿼리 파라미터로 라우팅
+                    st.query_params.clear()
+                    st.query_params["view"] = "detail"
+                    st.query_params["date"] = d.isoformat()
+                    st.query_params["idx"] = str(idx)
+                    st.rerun()
+                except Exception:
+                    pass
 
     # --- 오른쪽: 일자 리스트
     if "sel_date" not in st.session_state:
