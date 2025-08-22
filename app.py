@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 # app.py
 # -----------------------------------------------------------------------------
 # 집회/시위 알림 서비스 (Streamlit)
@@ -146,14 +147,13 @@ div.stButton > button:hover{ background-color:#1d3e91; border:1px solid #1d3e91;
 """,
     unsafe_allow_html=True,
 )
+
 # ====================== 2) 데이터 로드 함수 ================================
 @st.cache_data
 def load_events(path: str) -> pd.DataFrame:
-    """
-    집회 데이터 로드 + 표준화 컬럼 생성
-    - 지원 컬럼 별칭: date/start_time/end_time/location/district/reported_head/memo/link/title
-    - 내부 표준 컬럼: _date, _start, _end, _loc, _dist, _head, _memo, __link, __title
-    """
+    # 집회 데이터 로드 + 표준화 컬럼 생성
+    # - 지원 컬럼 별칭: date/start_time/end_time/location/district/reported_head/memo/link/title
+    # - 내부 표준 컬럼: _date, _start, _end, _loc, _dist, _head, _memo, __link, __title
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(f"파일을 찾을 수 없습니다: {path}")
@@ -217,10 +217,8 @@ def load_events(path: str) -> pd.DataFrame:
 
 @st.cache_data
 def load_bus(path: str) -> pd.DataFrame:
-    """
-    버스 우회 데이터 로드 + 좌표/정류소 표준화
-    - 반환: start_date/start_time/end_date/end_time/ARS_ID/정류소명/lon/lat
-    """
+    # 버스 우회 데이터 로드 + 좌표/정류소 표준화
+    # - 반환: start_date/start_time/end_date/end_time/ARS_ID/정류소명/lon/lat
     p = Path(path)
     if not p.exists():
         return pd.DataFrame()
@@ -285,9 +283,7 @@ def load_bus(path: str) -> pd.DataFrame:
 
 @st.cache_data
 def load_routes(path: str) -> pd.DataFrame:
-    """
-    노선-정류장 매핑 CSV 로드 (date, ars_id, route)
-    """
+    # 노선-정류장 매핑 CSV 로드 (date, ars_id, route)
     p = Path(path)
     if not p.exists():
         return pd.DataFrame(columns=["date", "ars_id", "route"])
@@ -327,12 +323,11 @@ def df_to_month_dots(df: pd.DataFrame):
         ed_iso = f"{r['_date']}T{r['_end']}:00"
         events.append(
             {
-                "title": "",                     # 월 뷰에 텍스트 안 보이게(우린 점만)
+                "title": "",
                 "start": st_iso,
                 "end": ed_iso,
                 "display": "list-item",
                 "color": color_by_headcount(r["_head"]),
-                # 클릭 시 다시 찾아갈 열쇠들
                 "extendedProps": {
                     "d": d_iso,
                     "st": r["_start"],
@@ -342,7 +337,6 @@ def df_to_month_dots(df: pd.DataFrame):
             }
         )
     return events
-
 
 
 def filter_by_day(df: pd.DataFrame, d: date) -> pd.DataFrame:
@@ -412,7 +406,7 @@ def build_wordcloud_image(
     if not counter:
         return None
     fp = font_path if Path(font_path).exists() else None
-    from wordcloud import WordCloud as _WC  # to ensure local alias in some envs
+    from wordcloud import WordCloud as _WC
     wc = _WC(font_path=fp, width=1200, height=600, background_color="white", colormap="tab20c")
     return wc.generate_from_frequencies(counter).to_image()
 
@@ -443,7 +437,6 @@ def _domain(u: str) -> str:
         return ""
 
 def render_news_cards_for_event(df_all: pd.DataFrame, row: pd.Series):
-    """상세 화면: 해당 이벤트의 관련 기사(링크/제목) 카드로 표시"""
     st.markdown("###### 집회/시위 관련 기사 보기")
 
     d, stt, edt = row["_date"], row["_start"], row["_end"]
@@ -462,7 +455,6 @@ def render_news_cards_for_event(df_all: pd.DataFrame, row: pd.Series):
         seen.add(url)
         items.append({"url": url, "title": title})
 
-    # 카드 렌더
     st.markdown("<div class='news-wrap'>", unsafe_allow_html=True)
     if not items:
         st.caption("해당 시간대의 관련 기사를 찾지 못했습니다.")
@@ -487,7 +479,6 @@ def render_news_cards_for_event(df_all: pd.DataFrame, row: pd.Series):
     html_parts.append("</div>")
     st.markdown("".join(html_parts), unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
-
     st.markdown("<div class='gap-24'></div>", unsafe_allow_html=True)
 
 
@@ -516,7 +507,6 @@ def render_detail(df_all: pd.DataFrame, bus_df: pd.DataFrame, routes_df: pd.Data
     WEEK_KO = ["월", "화", "수", "목", "금", "토", "일"]
     st.markdown(f"#### {d.month}월 {d.day}일({WEEK_KO[d.weekday()]}) 상세 정보")
 
-    # --- 집회 기본 정보 테이블
     st.markdown("###### 오늘의 집회/시위")
     time_str = f"{row['_start']} ~ {row['_end']}"
     loc_str = f"{(row['_dist']+' ') if row['_dist'] not in ['','nan','None'] else ''}{row['_loc']}"
@@ -531,7 +521,6 @@ def render_detail(df_all: pd.DataFrame, bus_df: pd.DataFrame, routes_df: pd.Data
     info_df = pd.DataFrame([[time_str, loc_str, head_str, keywords]], columns=["집회 시간", "집회 장소(행진로)", "신고 인원", "관련 이슈"])
     st.table(info_df)
 
-    # --- 버스 우회 정보(표/지도)
     st.markdown("###### 버스 우회 정보")
     bus_rows = get_bus_rows_for_date(bus_df, d)
     route_slice = routes_df[routes_df["date"] == d].copy() if routes_df is not None and not routes_df.empty else pd.DataFrame()
@@ -549,12 +538,10 @@ def render_detail(df_all: pd.DataFrame, bus_df: pd.DataFrame, routes_df: pd.Data
         else:
             bus_rows["노선"] = ""
 
-        # 표: 시작/종료시간 제거 → [버스 정류소 번호, 버스 정류소 명, 노선]
         bus_view = bus_rows[["ARS_ID", "정류소명", "노선"]].rename(columns={"ARS_ID": "버스 정류소 번호", "정류소명": "버스 정류소 명"})
         bus_view = bus_view[["버스 정류소 번호", "버스 정류소 명", "노선"]]
         st.table(bus_view.reset_index(drop=True))
 
-        # 지도 표시
         map_df = bus_rows[["lat", "lon", "정류소명", "ARS_ID", "노선"]].copy()
         if not map_df.empty:
             view_state = pdk.ViewState(latitude=float(map_df["lat"].mean()), longitude=float(map_df["lon"].mean()), zoom=16)
@@ -569,10 +556,8 @@ def render_detail(df_all: pd.DataFrame, bus_df: pd.DataFrame, routes_df: pd.Data
             tooltip = {"html": "<b>{정류소명}</b><br/>정류소 번호: {ARS_ID}<br/>노선: {노선}", "style": {"backgroundColor": "white", "color": "black"}}
             st.pydeck_chart(pdk.Deck(layers=[point_layer], initial_view_state=view_state, tooltip=tooltip, map_style="road"))
 
-    # --- 관련 기사 카드
     render_news_cards_for_event(df_all, row)
 
-    # --- 건의사항 폼
     st.markdown("###### 오늘의 집회/시위에 대한 여러분의 건의사항을 남겨주세요")
     with st.form("feedback_form", clear_on_submit=True):
         fb = st.text_area("의견을 작성해주세요 (관리자에게 전달됩니다)", height=80, key="fb_detail")
@@ -585,7 +570,6 @@ def render_detail(df_all: pd.DataFrame, bus_df: pd.DataFrame, routes_df: pd.Data
             save_path = Path("data/feedback.csv")
             save_path.parent.mkdir(parents=True, exist_ok=True)
             from hashlib import md5
-
             row_key = f"{str(d)}|{row.get('_start')}|{row.get('_end')}|{row.get('_loc')}|{fb.strip()}"
             dupe_key = md5(row_key.encode("utf-8")).hexdigest()
 
@@ -610,7 +594,6 @@ def render_detail(df_all: pd.DataFrame, bus_df: pd.DataFrame, routes_df: pd.Data
                 pd.concat([df_now, pd.DataFrame([row_dict])], ignore_index=True).to_csv(save_path, index=False, encoding="utf-8-sig")
                 st.success("건의사항이 저장되었습니다. 감사합니다!")
 
-    # --- 워드클라우드
     st.markdown("###### 건의사항 키워드 요약")
     fb_all = load_feedback("data/feedback.csv")
     if fb_all.empty:
@@ -650,7 +633,7 @@ def render_main_page(df, bus_df, routes_df):
                 "height": CALENDAR_H,
                 "firstDay": 0,
                 "headerToolbar": {"left": "prev", "center": "title", "right": "next"},
-                "buttonIcons": {"prev": "", "next": ""},  # 기본 아이콘 제거
+                "buttonIcons": {"prev": "", "next": ""},
                 "dayMaxEventRows": True,
             }
             cal_res = calendar(
@@ -658,53 +641,27 @@ def render_main_page(df, bus_df, routes_df):
                 options=options,
                 custom_css="""
 /* ===== FullCalendar – Light theme override inside the widget iframe ===== */
-
-/* 전체 배경/기본 글자색 */
-.fc,
-.fc .fc-scrollgrid,
-.fc .fc-daygrid,
-.fc-theme-standard .fc-scrollgrid {
-  background:#ffffff !important;
-  color:#111827 !important;
+.fc, .fc .fc-scrollgrid, .fc .fc-daygrid, .fc-theme-standard .fc-scrollgrid {
+  background:#ffffff !important; color:#111827 !important;
 }
-
-/* 격자선 */
-.fc-theme-standard td,
-.fc-theme-standard th {
-  border-color:#e5e7eb !important;
-}
-
-/* 헤더 타이틀 */
+.fc-theme-standard td, .fc-theme-standard th { border-color:#e5e7eb !important; }
 .fc .fc-toolbar-title { color:#111827 !important; font-weight:700 !important; }
-
-/* 날짜 숫자 */
 .fc .fc-daygrid-day-number { color:#111827 !important; }
-
-/* 오늘 배경 */
 .fc .fc-day-today { background:#fff7ed !important; }
-
-/* 이벤트 / +n more 링크 */
-.fc .fc-daygrid-more-link,
-.fc .fc-event { color:#111827 !important; }
-
-/* 상단 prev/next 버튼 – 흰 배경 + 검은 테두리 */
-.fc .fc-button {
-  background:#fff !important;
-  border:1px solid #000 !important;
-  color:#000 !important;
-  border-radius:20px !important;
-}
-
-/* 기본 아이콘 숨기고 텍스트 아이콘으로 대체 */
+.fc .fc-daygrid-more-link, .fc .fc-event { color:#111827 !important; }
+/* 상단 prev/next 버튼 */
+.fc .fc-button { background:#fff !important; border:1px solid #000 !important; color:#000 !important; border-radius:20px !important; }
 .fc .fc-icon { display:none !important; }
 .fc .fc-prev-button:after { content:"◀"; font-size:16px; }
 .fc .fc-next-button:after { content:"▶"; font-size:16px; }
-
-/* 'more' 두 줄 처리 */
-.fc-daygrid-more-link { white-space: pre-line !important; font-size:14px !important; line-height:1.2 !important; }
+/* 'more' 두 줄 처리 + 텍스트 크기 축소 */
+.fc-daygrid-more-link { white-space: pre-line !important; font-size:12px !important; line-height:1.2 !important; }
 .fc-daygrid-more-link::before { content: attr(aria-label); white-space: pre-line; }
+/* 팝오버 안의 각 이벤트 텍스트 크기 축소 */
+.fc-popover .fc-event-title, .fc-popover .fc-event-time { font-size:12px !important; }
 """
             )
+            # ← 캘린더 이벤트 클릭 시 상세 페이지로 라우팅
             if cal_res and cal_res.get("eventClick"):
                 try:
                     ev = cal_res["eventClick"]["event"]
@@ -714,7 +671,6 @@ def render_main_page(df, bus_df, routes_df):
                     etime = ep.get("ed", "")
                     loc = ep.get("loc", "")
 
-                    # 해당 날짜의 정렬 규칙대로 인덱스 계산
                     day_df = filter_by_day(df, d)
                     idx = 0
                     for i, (_, rr) in enumerate(day_df.iterrows()):
@@ -722,7 +678,6 @@ def render_main_page(df, bus_df, routes_df):
                             idx = i
                             break
 
-                    # 쿼리 파라미터로 라우팅
                     st.query_params.clear()
                     st.query_params["view"] = "detail"
                     st.query_params["date"] = d.isoformat()
@@ -792,14 +747,12 @@ def render_main_page(df, bus_df, routes_df):
 
 
 # ====================== 7) 챗봇 (모달 + FAB) ==================================
-# 대화 상태
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 if "input_counter" not in st.session_state:
     st.session_state.input_counter = 0
 
 def _chat_ui_body():
-    """모달 내부에 렌더되는 챗봇 UI(히스토리 + 입력)"""
     st.markdown('<div class="chat-wrap"><div class="chat-scroll" id="chat-scroll">', unsafe_allow_html=True)
 
     if not st.session_state.chat_history:
@@ -812,7 +765,6 @@ def _chat_ui_body():
 
     st.markdown("</div></div>", unsafe_allow_html=True)
 
-    # 입력줄
     st.markdown('<div class="chat-input-area">', unsafe_allow_html=True)
     c1, c2 = st.columns([8, 1])
     with c1:
@@ -825,7 +777,6 @@ def _chat_ui_body():
         send = st.button("전송", use_container_width=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # 전송 처리
     if send and user_input.strip():
         st.session_state.chat_history.append(("user", user_input))
         if all_texts:
@@ -852,11 +803,9 @@ def _chat_ui_body():
         st.session_state.input_counter += 1
         st.rerun()
 
-# Streamlit dialog API 호환 래퍼 (1.33+ or experimental)
 _dialog = getattr(st, "dialog", None) or getattr(st, "experimental_dialog", None)
 
 def render_chat_modal_if_needed():
-    """쿼리파라미터 ?chat=open 일 때 챗봇 모달 오픈"""
     qp = st.query_params
     if qp.get("chat", "") == "open" and _dialog is not None:
         @_dialog("버스 우회 정보 챗봇")
@@ -865,7 +814,6 @@ def render_chat_modal_if_needed():
             col1, col2 = st.columns([1,1])
             with col1:
                 if st.button("닫기", use_container_width=True):
-                    # chat 파라미터 제거하고 닫기
                     params = dict(qp)
                     params.pop("chat", None)
                     st.query_params.clear()
@@ -877,8 +825,6 @@ def render_chat_modal_if_needed():
         _modal()
 
 def render_chat_fab():
-    """우측 하단 플로팅 버튼: 클릭 시 ?chat=open 로 이동하여 모달 오픈"""
-    # 현재 쿼리 유지 + chat=open만 덮어쓰기
     qp = st.query_params
     pairs = [f"{k}={v}" for k, v in qp.items() if k != "chat"]
     pairs.append("chat=open")
@@ -891,9 +837,9 @@ DATA_PATH = st.sidebar.text_input("집회 데이터 경로 (xlsx/csv)", value="d
 BUS_PATH = st.sidebar.text_input("버스 우회 데이터 경로 (xlsx)", value="data/bus_data.xlsx")
 ROUTES_PATH = st.sidebar.text_input("버스 노선 데이터 경로 (CSV: routes_final.csv)", value="routes_final.csv")
 
-# 텍스트 지식 로드 (챗봇용)
 @st.cache_data
 def load_all_txt(data_dir="data/chatbot"):
+    # 챗봇용 텍스트 지식 로드
     texts=[]; p=Path(data_dir)
     if not p.exists(): return ""
     for path in p.glob("*.txt"):
@@ -925,7 +871,7 @@ if qp.get("view", "") == "detail":
 else:
     render_main_page(df, bus_df, routes_df)
 
-# FAB + 모달 처리 (페이지 어디서든 표시/동작)
+# FAB + 모달 처리
 render_chat_fab()
 render_chat_modal_if_needed()
 
