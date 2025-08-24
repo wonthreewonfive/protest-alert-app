@@ -12,6 +12,7 @@ import os
 import re
 import textwrap
 import base64
+from io import BytesIO
 from pathlib import Path
 from datetime import date, datetime
 from collections import Counter
@@ -149,16 +150,20 @@ div.stButton > button:hover{ background-color:#1d3e91; border:1px solid #1d3e91;
 )
 
 # ====================== 2) 데이터 로드 함수 ================================
-@st.cache_data
-def load_events(path: str) -> pd.DataFrame:
-    # 집회 데이터 로드 + 표준화 컬럼 생성
-    # - 지원 컬럼 별칭: date/start_time/end_time/location/district/reported_head/memo/link/title
-    # - 내부 표준 컬럼: _date, _start, _end, _loc, _dist, _head, _memo, __link, __title
+def _file_bytes_and_mtime(path: str) -> tuple[bytes, float, Path]:
     p = Path(path)
     if not p.exists():
         raise FileNotFoundError(f"파일을 찾을 수 없습니다: {path}")
-    df = pd.read_excel(p) if p.suffix.lower() in {".xlsx", ".xls"} else pd.read_csv(p)
+    return p.read_bytes(), p.stat().st_mtime, p
 
+@st.cache_data
+def load_events(path: str, _mtime: float) -> pd.DataFrame:
+    """집회 데이터 로드 + 표준화 컬럼 생성 (파일 mtime으로 캐시 무효화)"""
+    data, _, p = _file_bytes_and_mtime(path)
+    if p.suffix.lower() in {".xlsx", ".xls"}:
+        df = pd.read_excel(BytesIO(data))
+    else:
+        df = pd.read_csv(BytesIO(data), encoding="utf-8")
     variants = {
         "date": ["date", "날짜"],
         "start_time": ["start_time", "start", "시작", "starttime"],
@@ -170,28 +175,26 @@ def load_events(path: str) -> pd.DataFrame:
         "link": ["link", "news_link", "기사링크"],
         "title": ["title", "news_title", "기사제목"],
     }
-
     def find_col(k):
         for cand in variants[k]:
             for c in df.columns:
                 if str(c).strip().lower() == cand.lower():
                     return c
         return None
-
     col = {k: find_col(k) for k in variants}
     for k in ["date", "start_time", "end_time", "location"]:
         if col[k] is None:
             raise ValueError(f"'{k}' 컬럼이 필요합니다.")
-
     def to_date(x):
         if pd.isna(x):
             return None
-        s = str(x).strip().replace(".", "-") if re.match(r"^\d{4}\.\d{1,2}\.\d{1,2}$", str(x)) else str(x)
+        s = str(x).strip()
+        if re.match(r"^\d{4}\.\d{1,2}\.\d{1,2}$", s):
+            s = s.replace(".", "-")
         try:
             return parser.parse(s).date()
         except Exception:
             return None
-
     def to_time(x):
         if pd.isna(x):
             return None
@@ -200,39 +203,36 @@ def load_events(path: str) -> pd.DataFrame:
             return f"{t.hour:02d}:{t.minute:02d}"
         except Exception:
             return None
-
     df["_date"] = df[col["date"]].apply(to_date)
     df["_start"] = df[col["start_time"]].apply(to_time)
-    df["_end"] = df[col["end_time"]].apply(to_time)
-    df["_loc"] = df[col["location"]].astype(str)
-    df["_dist"] = df[col["district"]].astype(str) if col["district"] else ""
-    df["_head"] = df[col["reported_head"]] if col["reported_head"] else ""
-    df["_memo"] = df[col["memo"]].astype(str) if col["memo"] else ""
-    df["__link"] = df[col["link"]] if col["link"] else ""
+    df["_end"]   = df[col["end_time"]].apply(to_time)
+    df["_loc"]   = df[col["location"]].astype(str)
+    df["_dist"]  = df[col["district"]].astype(str) if col["district"] else ""
+    df["_head"]  = df[col["reported_head"]] if col["reported_head"] else ""
+    df["_memo"]  = df[col["memo"]].astype(str) if col["memo"] else ""
+    df["__link"]  = df[col["link"]] if col["link"] else ""
     df["__title"] = df[col["title"]] if col["title"] else ""
-
     df = df[df["_date"].notnull() & df["_start"].notnull() & df["_end"].notnull()]
     return df.reset_index(drop=True)
 
-
 @st.cache_data
-def load_bus(path: str) -> pd.DataFrame:
-    # 버스 우회 데이터 로드 + 좌표/정류소 표준화
-    # - 반환: start_date/start_time/end_date/end_time/ARS_ID/정류소명/lon/lat
+def load_bus(path: str, _mtime: float) -> pd.DataFrame:
+    """버스 우회 데이터 로드 (파일 mtime으로 캐시 무효화)"""
     p = Path(path)
     if not p.exists():
         return pd.DataFrame()
-    df = pd.read_excel(p)
-
+    data = p.read_bytes()
+    df = pd.read_excel(BytesIO(data))
     def to_date(x):
         if pd.isna(x):
             return None
-        s = str(x).strip().replace(".", "-") if re.match(r"^\d{4}\.\d{1,2}\.\d{1,2}$", str(x)) else str(x)
+        s = str(x).strip()
+        if re.match(r"^\d{4}\.\d{1,2}\.\d{1,2}$", s):
+            s = s.replace(".", "-")
         try:
             return parser.parse(s).date()
         except Exception:
             return None
-
     def to_time(x):
         if pd.isna(x):
             return None
@@ -241,37 +241,32 @@ def load_bus(path: str) -> pd.DataFrame:
             return f"{t.hour:02d}:{t.minute:02d}"
         except Exception:
             return None
-
     cols = {c: str(c).strip().lower() for c in df.columns}
-
     def pick(*names):
         for n in names:
             for c, lc in cols.items():
                 if lc == n:
                     return c
         return None
-
     c_sd = pick("start_date", "시작일")
     c_st = pick("start_time", "시작시간")
     c_ed = pick("end_date", "종료일")
     c_et = pick("end_time", "종료시간")
     c_ars = pick("ars_id", "ars", "정류장id")
     c_nm = pick("정류소명", "정류장명", "stop_name")
-    c_x = pick("x좌표", "x", "lon", "lng")
-    c_y = pick("y좌표", "y", "lat")
+    c_x  = pick("x좌표", "x", "lon", "lng")
+    c_y  = pick("y좌표", "y", "lat")
     if any(c is None for c in [c_sd, c_st, c_ed, c_et, c_ars, c_nm, c_x, c_y]):
         return pd.DataFrame()
-
     ars_series = (
         df[c_ars].astype(str).map(lambda s: re.sub(r"\D", "", s)).map(lambda s: s.zfill(5))
     )
-
     out = pd.DataFrame(
         {
             "start_date": df[c_sd].apply(to_date),
             "start_time": df[c_st].apply(to_time),
-            "end_date": df[c_ed].apply(to_date),
-            "end_time": df[c_et].apply(to_time),
+            "end_date":   df[c_ed].apply(to_date),
+            "end_time":   df[c_et].apply(to_time),
             "ARS_ID": ars_series,
             "정류소명": df[c_nm].astype(str),
             "lon": pd.to_numeric(df[c_x], errors="coerce"),
@@ -280,21 +275,19 @@ def load_bus(path: str) -> pd.DataFrame:
     )
     return out.dropna(subset=["start_date", "end_date", "lon", "lat"]).reset_index(drop=True)
 
-
 @st.cache_data
-def load_routes(path: str) -> pd.DataFrame:
-    # 노선-정류장 매핑 CSV 로드 (date, ars_id, route)
+def load_routes(path: str, _mtime: float) -> pd.DataFrame:
+    """노선-정류장 매핑 CSV 로드 (파일 mtime으로 캐시 무효화)"""
     p = Path(path)
     if not p.exists():
         return pd.DataFrame(columns=["date", "ars_id", "route"])
-    df = pd.read_csv(p, dtype={"ars_id": str, "route": str})
-
+    data = p.read_bytes()
+    df = pd.read_csv(BytesIO(data), dtype={"ars_id": str, "route": str})
     def to_date(x):
         try:
             return parser.parse(str(x)).date()
         except Exception:
             return None
-
     df["date"] = df["date"].apply(to_date)
     df["ars_id"] = df["ars_id"].astype(str).str.replace(r"\D", "", regex=True).str.zfill(5)
     df["route"] = df["route"].fillna("").astype(str).str.strip()
@@ -312,7 +305,6 @@ def color_by_headcount(h):
         return "#3b82f6"
     except Exception:
         return "#3b82f6"
-
 
 def df_to_month_dots(df: pd.DataFrame):
     """FullCalendar용 월간 도트 이벤트 (+ 클릭 식별용 extendedProps 포함)"""
@@ -338,16 +330,13 @@ def df_to_month_dots(df: pd.DataFrame):
         )
     return events
 
-
 def filter_by_day(df: pd.DataFrame, d: date) -> pd.DataFrame:
     return df[df["_date"] == d].sort_values(by=["_start", "_end", "_loc"])
-
 
 def get_bus_rows_for_date(bus_df: pd.DataFrame, d: date) -> pd.DataFrame:
     if bus_df is None or bus_df.empty:
         return pd.DataFrame()
     return bus_df[(bus_df["start_date"] <= d) & (bus_df["end_date"] >= d)].copy()
-
 
 # --- 워드클라우드 전처리 ---
 _STOPWORDS = {
@@ -363,10 +352,8 @@ _SUFFIX_PAT = re.compile(
     r"되겠습니다|되었습|되었으면|되면|되어|되었습니다|되는데|않습니다|않아요|"
     r"같습니다|하겠습니다|부탁드립니다|감사합니다|감사하겠습니다|해요|했어요|합니다만)$"
 )
-
 def strip_suffix(tok: str) -> str:
     return re.sub(_SUFFIX_PAT, "", tok)
-
 def tokenize_ko(s: str):
     if not isinstance(s, str):
         return []
@@ -380,10 +367,8 @@ def tokenize_ko(s: str):
             continue
         out.append(t)
     return out
-
 def make_bigrams(tokens, join_str=" "):
     return [join_str.join(p) for p in zip(tokens, tokens[1:])]
-
 def build_wordcloud_image(
     fb_df, date_filter=None, use_bigrams=False, font_path="data/Nanum_Gothic/NanumGothic-Regular.ttf"
 ):
@@ -409,7 +394,6 @@ def build_wordcloud_image(
     from wordcloud import WordCloud as _WC
     wc = _WC(font_path=fp, width=1200, height=600, background_color="white", colormap="tab20c")
     return wc.generate_from_frequencies(counter).to_image()
-
 def load_feedback(path="data/feedback.csv"):
     p = Path(path)
     if not p.exists():
@@ -422,28 +406,23 @@ def load_feedback(path="data/feedback.csv"):
 
 # ====================== 4) 뉴스 카드 렌더링 헬퍼 ==============================
 URL_RE = re.compile(r"https?://[^\s,]+", re.I)
-
 def _first_url(s: str) -> str | None:
     if not isinstance(s, str):
         return None
     m = URL_RE.findall(s)
     return m[0] if m else None
-
 def _domain(u: str) -> str:
     try:
         h = urlparse(u).netloc
         return h.replace("www.", "")
     except Exception:
         return ""
-
 def render_news_cards_for_event(df_all: pd.DataFrame, row: pd.Series):
     st.markdown("###### 집회/시위 관련 기사 보기")
-
     d, stt, edt = row["_date"], row["_start"], row["_end"]
     rows = df_all[(df_all["_date"] == d) & (df_all["_start"] == stt) & (df_all["_end"] == edt)][
         ["__link", "__title"]
     ].dropna(how="all")
-
     items, seen = [], set()
     for _, r in rows.iterrows():
         url = _first_url(str(r["__link"]))
@@ -454,14 +433,12 @@ def render_news_cards_for_event(df_all: pd.DataFrame, row: pd.Series):
             continue
         seen.add(url)
         items.append({"url": url, "title": title})
-
     st.markdown("<div class='news-wrap'>", unsafe_allow_html=True)
     if not items:
         st.caption("해당 시간대의 관련 기사를 찾지 못했습니다.")
         st.markdown("</div>", unsafe_allow_html=True)
         st.markdown("<div class='gap-24'></div>", unsafe_allow_html=True)
         return
-
     html_parts = ["<div class='news-grid'>"]
     for it in items[:8]:
         url = it["url"]
@@ -484,13 +461,6 @@ def render_news_cards_for_event(df_all: pd.DataFrame, row: pd.Series):
 
 # ====================== 5) 상세 페이지(일자) ==================================
 def render_detail(df_all: pd.DataFrame, bus_df: pd.DataFrame, routes_df: pd.DataFrame, d: date, idx: int):
-    """
-    선택된 날짜/행의 상세 화면
-    - 오늘의 집회/시위 요약
-    - 버스 우회 정보(표: 정류소번호/정류소명/노선) + 지도
-    - 관련 기사 카드
-    - 건의사항 폼 + 워드클라우드
-    """
     day_df = filter_by_day(df_all, d)
     if len(day_df) == 0 or idx < 0 or idx >= len(day_df):
         st.error("상세 정보를 찾을 수 없어요.")
@@ -498,15 +468,12 @@ def render_detail(df_all: pd.DataFrame, bus_df: pd.DataFrame, routes_df: pd.Data
             st.query_params.clear()
             st.rerun()
         return
-
     if st.button("← 목록으로"):
         st.query_params.clear()
         st.rerun()
-
     row = day_df.iloc[idx]
     WEEK_KO = ["월", "화", "수", "목", "금", "토", "일"]
     st.markdown(f"#### {d.month}월 {d.day}일({WEEK_KO[d.weekday()]}) 상세 정보")
-
     st.markdown("###### 오늘의 집회/시위")
     time_str = f"{row['_start']} ~ {row['_end']}"
     loc_str = f"{(row['_dist']+' ') if row['_dist'] not in ['','nan','None'] else ''}{row['_loc']}"
@@ -520,11 +487,9 @@ def render_detail(df_all: pd.DataFrame, bus_df: pd.DataFrame, routes_df: pd.Data
     keywords = str(row["_memo"]).strip() if str(row["_memo"]).strip() not in ["nan", "None"] else ""
     info_df = pd.DataFrame([[time_str, loc_str, head_str, keywords]], columns=["집회 시간", "집회 장소(행진로)", "신고 인원", "관련 이슈"])
     st.table(info_df)
-
     st.markdown("###### 버스 우회 정보")
     bus_rows = get_bus_rows_for_date(bus_df, d)
     route_slice = routes_df[routes_df["date"] == d].copy() if routes_df is not None and not routes_df.empty else pd.DataFrame()
-
     if bus_rows.empty:
         st.caption("※ 해당 날짜의 버스 우회 정보가 없습니다.")
     else:
@@ -537,11 +502,9 @@ def render_detail(df_all: pd.DataFrame, bus_df: pd.DataFrame, routes_df: pd.Data
             bus_rows = bus_rows.merge(agg, left_on="ARS_ID", right_index=True, how="left")
         else:
             bus_rows["노선"] = ""
-
         bus_view = bus_rows[["ARS_ID", "정류소명", "노선"]].rename(columns={"ARS_ID": "버스 정류소 번호", "정류소명": "버스 정류소 명"})
         bus_view = bus_view[["버스 정류소 번호", "버스 정류소 명", "노선"]]
         st.table(bus_view.reset_index(drop=True))
-
         map_df = bus_rows[["lat", "lon", "정류소명", "ARS_ID", "노선"]].copy()
         if not map_df.empty:
             view_state = pdk.ViewState(latitude=float(map_df["lat"].mean()), longitude=float(map_df["lon"].mean()), zoom=16)
@@ -555,14 +518,11 @@ def render_detail(df_all: pd.DataFrame, bus_df: pd.DataFrame, routes_df: pd.Data
             )
             tooltip = {"html": "<b>{정류소명}</b><br/>정류소 번호: {ARS_ID}<br/>노선: {노선}", "style": {"backgroundColor": "white", "color": "black"}}
             st.pydeck_chart(pdk.Deck(layers=[point_layer], initial_view_state=view_state, tooltip=tooltip, map_style="road"))
-
     render_news_cards_for_event(df_all, row)
-
     st.markdown("###### 오늘의 집회/시위에 대한 여러분의 건의사항을 남겨주세요")
     with st.form("feedback_form", clear_on_submit=True):
         fb = st.text_area("의견을 작성해주세요 (관리자에게 전달됩니다)", height=80, key="fb_detail")
         submitted = st.form_submit_button("등록")
-
     if submitted:
         if not fb.strip():
             st.warning("내용을 입력해주세요.")
@@ -572,7 +532,6 @@ def render_detail(df_all: pd.DataFrame, bus_df: pd.DataFrame, routes_df: pd.Data
             from hashlib import md5
             row_key = f"{str(d)}|{row.get('_start')}|{row.get('_end')}|{row.get('_loc')}|{fb.strip()}"
             dupe_key = md5(row_key.encode("utf-8")).hexdigest()
-
             df_now = load_feedback(str(save_path))
             if "dupe_key" not in df_now.columns:
                 df_now["dupe_key"] = ""
@@ -593,7 +552,6 @@ def render_detail(df_all: pd.DataFrame, bus_df: pd.DataFrame, routes_df: pd.Data
                 }
                 pd.concat([df_now, pd.DataFrame([row_dict])], ignore_index=True).to_csv(save_path, index=False, encoding="utf-8-sig")
                 st.success("건의사항이 저장되었습니다. 감사합니다!")
-
     st.markdown("###### 건의사항 키워드 요약")
     fb_all = load_feedback("data/feedback.csv")
     if fb_all.empty:
@@ -617,12 +575,10 @@ def render_detail(df_all: pd.DataFrame, bus_df: pd.DataFrame, routes_df: pd.Data
 CALENDAR_H = 520
 HEADER_OFFSET = 85
 PANEL_BODY_H = CALENDAR_H - HEADER_OFFSET
-
 def render_main_page(df, bus_df, routes_df):
     st.markdown("### 이달의 집회")
     st.caption("이번 달의 집회를 한눈에 확인해보세요.")
     left, right = st.columns(2)
-
     # --- 왼쪽: 달력
     with left:
         with st.container(border=True):
@@ -661,7 +617,6 @@ def render_main_page(df, bus_df, routes_df):
 .fc-popover .fc-event-title, .fc-popover .fc-event-time { font-size:12px !important; }
 """
             )
-            # ← 캘린더 이벤트 클릭 시 상세 페이지로 라우팅
             if cal_res and cal_res.get("eventClick"):
                 try:
                     ev = cal_res["eventClick"]["event"]
@@ -670,14 +625,12 @@ def render_main_page(df, bus_df, routes_df):
                     stime = ep.get("st", "")
                     etime = ep.get("ed", "")
                     loc = ep.get("loc", "")
-
                     day_df = filter_by_day(df, d)
                     idx = 0
                     for i, (_, rr) in enumerate(day_df.iterrows()):
                         if rr["_start"] == stime and rr["_end"] == etime and rr["_loc"] == loc:
                             idx = i
                             break
-
                     st.query_params.clear()
                     st.query_params["view"] = "detail"
                     st.query_params["date"] = d.isoformat()
@@ -685,11 +638,9 @@ def render_main_page(df, bus_df, routes_df):
                     st.rerun()
                 except Exception:
                     pass
-
     # --- 오른쪽: 일자 리스트
     if "sel_date" not in st.session_state:
         st.session_state.sel_date = date.today()
-
     with right:
         with st.container(border=True):
             nav1, nav2, nav3 = st.columns([1, 1, 1])
@@ -704,11 +655,9 @@ def render_main_page(df, bus_df, routes_df):
                 if st.button("▶", use_container_width=True):
                     d = st.session_state.sel_date
                     st.session_state.sel_date = d.fromordinal(d.toordinal() + 1)
-
             sel_date = st.session_state.sel_date
             WEEK_KO = ["월", "화", "수", "목", "금", "토", "일"]
             st.markdown(f"#### {sel_date.month}월 {sel_date.day}일({WEEK_KO[sel_date.weekday()]}) 집회 일정 안내")
-
             day_df = filter_by_day(df, sel_date)
             html_parts = [f"<div style='height:{PANEL_BODY_H}px; overflow-y:auto; padding-right:8px;'>"]
             if len(day_df) == 0:
@@ -754,17 +703,13 @@ if "input_counter" not in st.session_state:
 
 def _chat_ui_body():
     st.markdown('<div class="chat-wrap"><div class="chat-scroll" id="chat-scroll">', unsafe_allow_html=True)
-
     if not st.session_state.chat_history:
         st.session_state.chat_history.append(("bot", "안녕하세요! 날짜와 노선을 알려주시면 우회 정보를 찾아드릴게요.\n예) 8월 15일 172번 우회 알려줘"))
-
     for role, msg in st.session_state.chat_history:
         row_cls = "msg-row user" if role == "user" else "msg-row"
         bub_cls = "bubble user" if role == "user" else "bubble bot"
         st.markdown(f'<div class="{row_cls}"><div class="{bub_cls}">{msg}</div></div>', unsafe_allow_html=True)
-
     st.markdown("</div></div>", unsafe_allow_html=True)
-
     st.markdown('<div class="chat-input-area">', unsafe_allow_html=True)
     c1, c2 = st.columns([8, 1])
     with c1:
@@ -776,7 +721,6 @@ def _chat_ui_body():
     with c2:
         send = st.button("전송", use_container_width=True)
     st.markdown("</div>", unsafe_allow_html=True)
-
     if send and user_input.strip():
         st.session_state.chat_history.append(("user", user_input))
         if all_texts:
@@ -798,13 +742,11 @@ def _chat_ui_body():
                 response = llm.predict(prompt)
         else:
             response = "❌ 텍스트 데이터가 없어서 답변할 수 없습니다."
-
         st.session_state.chat_history.append(("bot", response))
         st.session_state.input_counter += 1
         st.rerun()
 
 _dialog = getattr(st, "dialog", None) or getattr(st, "experimental_dialog", None)
-
 def render_chat_modal_if_needed():
     qp = st.query_params
     if qp.get("chat", "") == "open" and _dialog is not None:
@@ -823,7 +765,6 @@ def render_chat_modal_if_needed():
             with col2:
                 st.caption("도움이 더 필요하시면 계속 질문해 주세요!")
         _modal()
-
 def render_chat_fab():
     qp = st.query_params
     pairs = [f"{k}={v}" for k, v in qp.items() if k != "chat"]
@@ -837,9 +778,13 @@ DATA_PATH = st.sidebar.text_input("집회 데이터 경로 (xlsx/csv)", value="d
 BUS_PATH = st.sidebar.text_input("버스 우회 데이터 경로 (xlsx)", value="data/bus_data.xlsx")
 ROUTES_PATH = st.sidebar.text_input("버스 노선 데이터 경로 (CSV: routes_final.csv)", value="routes_final.csv")
 
+# 새로고침 버튼(캐시 클리어)
+if st.sidebar.button("데이터 새로고침"):
+    st.cache_data.clear()
+    st.rerun()
+
 @st.cache_data
 def load_all_txt(data_dir="data/chatbot"):
-    # 챗봇용 텍스트 지식 로드
     texts=[]; p=Path(data_dir)
     if not p.exists(): return ""
     for path in p.glob("*.txt"):
@@ -849,11 +794,11 @@ def load_all_txt(data_dir="data/chatbot"):
     return "\n\n".join(texts)
 all_texts = load_all_txt()
 
-# 데이터 로드
+# 데이터 로드 (파일 mtime을 캐시 키로 포함)
 try:
-    df = load_events(DATA_PATH)
-    bus_df = load_bus(BUS_PATH)
-    routes_df = load_routes(ROUTES_PATH)
+    df        = load_events(DATA_PATH,  os.path.getmtime(DATA_PATH))
+    bus_df    = load_bus(BUS_PATH,      os.path.getmtime(BUS_PATH) if Path(BUS_PATH).exists() else 0.0)
+    routes_df = load_routes(ROUTES_PATH, os.path.getmtime(ROUTES_PATH) if Path(ROUTES_PATH).exists() else 0.0)
 except Exception as e:
     st.error(f"데이터 로드 오류: {e}")
     st.stop()
@@ -875,11 +820,9 @@ else:
 render_chat_fab()
 render_chat_modal_if_needed()
 
-
 # ====================== 9) 푸터 ===============================================
 jongno_logo = get_base64_of_image("data/assets/jongno_logo.png")
 kt_logo = get_base64_of_image("data/assets/kt_logo.png")
-
 st.markdown(
     f"""
 <style>
