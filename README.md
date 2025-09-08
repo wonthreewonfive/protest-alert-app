@@ -4,7 +4,7 @@
 
 ## 사용법
 - streamlit run app.py
-- 
+  
 ### 문제 해결 내용<br>
 구현 방식: 웹 애플리케이션 (Streamlit 기반) <br>
 사용 기술 : Streamlit, GPTAPI(챗봇), 공공데이터API(버스우회정보) <br>
